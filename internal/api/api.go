@@ -9,23 +9,29 @@ import (
 	"net/http"
 	"time"
 
-	"pulse/internal/config"
+	"github.com/Olzerq/Pulse/internal/config"
+	"github.com/Olzerq/Pulse/internal/postgres"
 )
 
-// Run starts the API HTTP server and drains it when the process context is
-// cancelled. Stage 1 intentionally exposes only a startup health endpoint.
+// Run connects the API to PostgreSQL, starts the HTTP server, and drains it
+// when the process context is cancelled.
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
-	})
+	pool, err := postgres.Open(ctx, cfg.PostgresURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	logger.InfoContext(ctx, "connected to PostgreSQL")
+
+	store := postgres.NewMonitorStore(pool)
+	router := newRouter(logger, store)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 

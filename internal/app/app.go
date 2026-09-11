@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"pulse/internal/config"
-	"pulse/internal/logging"
+	"github.com/Olzerq/Pulse/internal/config"
+	"github.com/Olzerq/Pulse/internal/logging"
 )
 
 // Runner is the service-specific part of a Pulse process. It must return after

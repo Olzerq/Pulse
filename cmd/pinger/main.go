@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 
-	"pulse/internal/app"
-	"pulse/internal/pinger"
+	"github.com/Olzerq/Pulse/internal/app"
+	"github.com/Olzerq/Pulse/internal/pinger"
 )
 
 func main() {

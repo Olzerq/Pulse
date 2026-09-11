@@ -8,16 +8,19 @@ backend-разработкой и event-driven архитектурой.
 проверок, показывать текущее состояние сервисов и отправлять уведомления при
 падении или восстановлении.
 
-Сейчас завершён первый этап разработки. Это рабочая основа проекта, на которой
-будут последовательно появляться API, HTTP-проверки, события и уведомления.
+Сейчас завершён второй этап разработки. Уже можно создавать и настраивать
+мониторы через HTTP API, а их данные сохраняются в PostgreSQL.
 
 ## Архитектура
 
-Проект состоит из трёх отдельных Go-приложений:
+Проект состоит из трёх отдельных долгоживущих Go-сервисов:
 
-- `api` принимает HTTP-запросы и в будущем будет управлять мониторами
+- `api` принимает HTTP-запросы и управляет мониторами
 - `pinger` будет проверять доступность сайтов и измерять время ответа
 - `consumer` будет обрабатывать результаты проверок
+
+Отдельная утилита `migrate` применяет изменения схемы PostgreSQL перед запуском
+API и сразу завершает работу.
 
 Планируемый поток данных выглядит так:
 
@@ -35,9 +38,14 @@ Monitor
 
 ## Что уже работает
 
-На первом этапе реализовано:
+Сейчас реализовано:
 
-- три отдельно собираемых приложения: API, Pinger и Consumer
+- три отдельно собираемых сервиса: API, Pinger и Consumer
+- одноразовая утилита для применения миграций
+- CRUD API для управления мониторами
+- хранение мониторов в PostgreSQL через `pgx`
+- версионируемые SQL-миграции с отдельным migration runner
+- маршрутизация HTTP-запросов через `chi`
 - конфигурация через переменные окружения
 - проверка конфигурации при запуске
 - структурированные JSON-логи через `log/slog`
@@ -59,8 +67,8 @@ Pinger и Consumer пока не выполняют бизнес-логику. �
 - Apache Kafka 4
 - Docker и Docker Compose
 
-На следующих этапах появятся `chi`, `pgx`, `go-redis`, `kafka-go`, Prometheus и
-интеграция с Telegram Bot API.
+На следующих этапах появятся `go-redis`, `kafka-go`, Prometheus и интеграция с
+Telegram Bot API.
 
 ## Быстрый запуск
 
@@ -72,7 +80,8 @@ Pinger и Consumer пока не выполняют бизнес-логику. �
 docker compose up --build
 ```
 
-Compose соберёт Go-приложения, запустит инфраструктуру и дождётся её готовности.
+Compose соберёт Go-приложения, запустит инфраструктуру, применит миграции и
+дождётся готовности API.
 
 После запуска API будет доступен по адресу:
 
@@ -121,6 +130,54 @@ docker compose down --volumes
 
 Внимание: последняя команда удаляет данные без возможности восстановления.
 
+## Работа с monitors
+
+Создать monitor:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/monitors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Example",
+    "url": "https://example.com",
+    "interval_seconds": 60,
+    "timeout_ms": 5000
+  }'
+```
+
+Если не передавать дополнительные настройки, API использует `GET`, ожидаемый
+HTTP status `200` и включает monitor сразу после создания.
+
+Получить список monitors:
+
+```bash
+curl http://localhost:8080/api/v1/monitors
+```
+
+Получить один monitor:
+
+```bash
+curl http://localhost:8080/api/v1/monitors/{id}
+```
+
+Изменить monitor:
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/monitors/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
+
+Удалить monitor:
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/monitors/{id}
+```
+
+Поддерживаются методы проверки `GET` и `HEAD`. Интервал задаётся в секундах,
+timeout в миллисекундах. API проверяет UUID, URL, HTTP method, интервалы и
+ожидаемый status code и возвращает ошибки в JSON.
+
 ## Локальный запуск Go-сервисов
 
 Каждое приложение можно запустить отдельно:
@@ -162,17 +219,21 @@ cmd/
   api/              точка входа API
   pinger/           точка входа Pinger
   consumer/         точка входа Consumer
+  migrate/          запуск миграций PostgreSQL
 
 internal/
   app/              общий запуск и обработка сигналов
   config/           загрузка и проверка конфигурации
   logging/          настройка структурированных логов
-  api/              HTTP-сервер
+  api/              HTTP-сервер и handlers
+  monitor/          модель monitor и правила валидации
+  postgres/         пул соединений и PostgreSQL store
+  migrate/          применение миграций
   pinger/           процесс Pinger
   consumer/         процесс Consumer
 
 docker/             общий Dockerfile для Go-сервисов
-migrations/         будущие миграции PostgreSQL
+migrations/         SQL-миграции и их встраивание в binary
 deploy/k8s/         будущие Kubernetes manifests
 docker-compose.yml  локальное окружение проекта
 ```
@@ -188,16 +249,10 @@ docker compose config --quiet
 
 ## Что дальше
 
-Следующий этап посвящён API и PostgreSQL. На нём появится полноценный CRUD для
-monitors:
+Следующий этап посвящён одному экземпляру Pinger. Он будет получать активные
+monitors из PostgreSQL, запускать HTTP-проверки по расписанию, учитывать timeout
+и ограничивать количество одновременных запросов. Результаты проверок на этом
+этапе будут выводиться в структурированные логи.
 
-```text
-GET    /api/v1/monitors
-GET    /api/v1/monitors/{id}
-POST   /api/v1/monitors
-PATCH  /api/v1/monitors/{id}
-DELETE /api/v1/monitors/{id}
-```
-
-Kafka, Redis state и Telegram notifications будут подключаться позже, когда
-базовый HTTP API и модель данных будут готовы.
+Kafka, Redis state и Telegram notifications будут подключаться позже согласно
+roadmap проекта.

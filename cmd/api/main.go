@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 
-	"pulse/internal/api"
-	"pulse/internal/app"
+	"github.com/Olzerq/Pulse/internal/api"
+	"github.com/Olzerq/Pulse/internal/app"
 )
 
 func main() {

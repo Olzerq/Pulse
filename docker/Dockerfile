@@ -7,9 +7,12 @@ FROM golang:${GO_VERSION}-alpine AS build
 ARG SERVICE
 WORKDIR /src
 
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY cmd ./cmd
 COPY internal ./internal
+COPY migrations ./migrations
 
 RUN test -n "${SERVICE}" && \
     CGO_ENABLED=0 GOOS=linux go build \

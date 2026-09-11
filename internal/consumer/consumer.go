@@ -5,7 +5,7 @@ import (
 	"context"
 	"log/slog"
 
-	"pulse/internal/config"
+	"github.com/Olzerq/Pulse/internal/config"
 )
 
 // Run keeps the Stage 1 consumer alive until shutdown. Kafka consumption is
