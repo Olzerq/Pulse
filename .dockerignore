@@ -1,0 +1,8 @@
+.git
+.gitignore
+.env
+bin
+dist
+work
+outputs
+README.md
