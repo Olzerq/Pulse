@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Olzerq/Pulse/internal/check"
+	"github.com/Olzerq/Pulse/internal/event"
 	"github.com/Olzerq/Pulse/internal/monitor"
 )
 
@@ -20,11 +21,16 @@ type httpChecker interface {
 	Check(context.Context, monitor.Monitor) check.Result
 }
 
+type resultPublisher interface {
+	Publish(context.Context, check.Result) (event.CheckResult, error)
+}
+
 // Scheduler loads active monitors, tracks their next run in memory, and sends
 // due work to a bounded pool. Distributed coordination is added in Stage 8.
 type Scheduler struct {
 	source       monitorSource
 	checker      httpChecker
+	publisher    resultPublisher
 	logger       *slog.Logger
 	pollInterval time.Duration
 	workerCount  int
@@ -33,6 +39,7 @@ type Scheduler struct {
 func NewScheduler(
 	source monitorSource,
 	checker httpChecker,
+	publisher resultPublisher,
 	logger *slog.Logger,
 	pollInterval time.Duration,
 	workerCount int,
@@ -40,6 +47,7 @@ func NewScheduler(
 	return &Scheduler{
 		source:       source,
 		checker:      checker,
+		publisher:    publisher,
 		logger:       logger,
 		pollInterval: pollInterval,
 		workerCount:  workerCount,
@@ -156,7 +164,12 @@ func (s *Scheduler) runWorker(
 
 	for item := range jobs {
 		result := s.checker.Check(ctx, item)
-		s.logResult(workerID, result)
+		published, err := s.publisher.Publish(ctx, result)
+		if err != nil {
+			s.logPublishError(ctx, workerID, published.EventID, result, err)
+		} else {
+			s.logResult(workerID, published.EventID, result)
+		}
 
 		select {
 		case completed <- item.ID:
@@ -166,9 +179,10 @@ func (s *Scheduler) runWorker(
 	}
 }
 
-func (s *Scheduler) logResult(workerID int, result check.Result) {
+func (s *Scheduler) logResult(workerID int, eventID string, result check.Result) {
 	attributes := []any{
 		"worker_id", workerID,
+		"event_id", eventID,
 		"monitor_id", result.MonitorID,
 		"checked_at", result.CheckedAt,
 		"success", result.Success,
@@ -184,10 +198,31 @@ func (s *Scheduler) logResult(workerID int, result check.Result) {
 
 	switch {
 	case result.Success:
-		s.logger.Info("check completed", attributes...)
+		s.logger.Info("check result published", attributes...)
 	case result.ErrorKind == check.FailureCanceled:
 		s.logger.Debug("check canceled", attributes...)
 	default:
-		s.logger.Warn("check failed", attributes...)
+		s.logger.Warn("failed check result published", attributes...)
 	}
+}
+
+func (s *Scheduler) logPublishError(
+	ctx context.Context,
+	workerID int,
+	eventID string,
+	result check.Result,
+	err error,
+) {
+	attributes := []any{
+		"worker_id", workerID,
+		"event_id", eventID,
+		"monitor_id", result.MonitorID,
+		"checked_at", result.CheckedAt,
+		"error", err,
+	}
+	if ctx.Err() != nil {
+		s.logger.Debug("Kafka publish canceled", attributes...)
+		return
+	}
+	s.logger.Error("publish check result", attributes...)
 }

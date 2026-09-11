@@ -20,6 +20,7 @@ const (
 	defaultRedisAddr       = "localhost:6379"
 	defaultKafkaBroker     = "localhost:9092"
 	defaultKafkaTopic      = "check.result"
+	defaultKafkaPublish    = 10 * time.Second
 	defaultPingerPoll      = time.Second
 	defaultPingerWorkers   = 20
 	defaultPingerUserAgent = "Pulse/0.1"
@@ -37,6 +38,7 @@ type Config struct {
 	RedisAddr        string
 	KafkaBrokers     []string
 	CheckResultTopic string
+	KafkaPublishTime time.Duration
 	PingerPoll       time.Duration
 	PingerWorkers    int
 	PingerUserAgent  string
@@ -46,6 +48,10 @@ type Config struct {
 // defaults. Environment variable names deliberately use a PULSE_ prefix.
 func Load(service string) (Config, error) {
 	shutdownTimeout, err := durationFromEnv("PULSE_SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	kafkaPublishTime, err := durationFromEnv("PULSE_KAFKA_PUBLISH_TIMEOUT", defaultKafkaPublish)
 	if err != nil {
 		return Config{}, err
 	}
@@ -68,6 +74,7 @@ func Load(service string) (Config, error) {
 		RedisAddr:        envOrDefault("PULSE_REDIS_ADDR", defaultRedisAddr),
 		KafkaBrokers:     csvFromEnv("PULSE_KAFKA_BROKERS", defaultKafkaBroker),
 		CheckResultTopic: envOrDefault("PULSE_KAFKA_CHECK_RESULTS_TOPIC", defaultKafkaTopic),
+		KafkaPublishTime: kafkaPublishTime,
 		PingerPoll:       pingerPoll,
 		PingerWorkers:    pingerWorkers,
 		PingerUserAgent:  envOrDefault("PULSE_PINGER_USER_AGENT", defaultPingerUserAgent),
@@ -108,6 +115,9 @@ func (c Config) Validate() error {
 	}
 	if c.CheckResultTopic == "" {
 		errs = append(errs, errors.New("PULSE_KAFKA_CHECK_RESULTS_TOPIC is required"))
+	}
+	if c.KafkaPublishTime <= 0 {
+		errs = append(errs, errors.New("PULSE_KAFKA_PUBLISH_TIMEOUT must be greater than zero"))
 	}
 	if c.PingerPoll < 100*time.Millisecond {
 		errs = append(errs, errors.New("PULSE_PINGER_POLL_INTERVAL must be at least 100ms"))

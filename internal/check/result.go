@@ -16,8 +16,8 @@ const (
 	FailureUnexpectedStatus FailureKind = "unexpected_status"
 )
 
-// Result is the outcome of one HTTP check. In Stage 3 it is logged by the
-// Pinger. In Stage 4 it becomes the basis of the Kafka check.result event.
+// Result is the outcome of one HTTP check and becomes the payload source for
+// the Kafka check.result event.
 type Result struct {
 	MonitorID  string
 	CheckedAt  time.Time

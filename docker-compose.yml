@@ -8,6 +8,7 @@ x-app-environment: &app-environment
   PULSE_REDIS_ADDR: redis:6379
   PULSE_KAFKA_BROKERS: kafka:19092
   PULSE_KAFKA_CHECK_RESULTS_TOPIC: ${PULSE_KAFKA_CHECK_RESULTS_TOPIC:-check.result}
+  PULSE_KAFKA_PUBLISH_TIMEOUT: ${PULSE_KAFKA_PUBLISH_TIMEOUT:-10s}
   PULSE_PINGER_POLL_INTERVAL: ${PULSE_PINGER_POLL_INTERVAL:-1s}
   PULSE_PINGER_MAX_CONCURRENCY: ${PULSE_PINGER_MAX_CONCURRENCY:-20}
   PULSE_PINGER_USER_AGENT: ${PULSE_PINGER_USER_AGENT:-Pulse/0.1}
@@ -67,6 +68,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
     stop_grace_period: 15s
@@ -128,6 +131,25 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - /opt/kafka/bin/kafka-topics.sh
+      - --bootstrap-server
+      - kafka:19092
+      - --create
+      - --if-not-exists
+      - --topic
+      - ${PULSE_KAFKA_CHECK_RESULTS_TOPIC:-check.result}
+      - --partitions
+      - "3"
+      - --replication-factor
+      - "1"
+    restart: "no"
 
   kafka:
     image: apache/kafka:4.3.1
