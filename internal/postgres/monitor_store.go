@@ -32,7 +32,16 @@ func NewMonitorStore(pool *pgxpool.Pool) *MonitorStore {
 }
 
 func (s *MonitorStore) List(ctx context.Context) ([]monitor.Monitor, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+monitorColumns+` FROM monitors ORDER BY created_at DESC, id DESC`)
+	return s.list(ctx, `SELECT `+monitorColumns+` FROM monitors ORDER BY created_at DESC, id DESC`)
+}
+
+// ListActive returns only monitors that should be scheduled by the Pinger.
+func (s *MonitorStore) ListActive(ctx context.Context) ([]monitor.Monitor, error) {
+	return s.list(ctx, `SELECT `+monitorColumns+` FROM monitors WHERE enabled = true ORDER BY id`)
+}
+
+func (s *MonitorStore) list(ctx context.Context, query string) ([]monitor.Monitor, error) {
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query monitors: %w", err)
 	}

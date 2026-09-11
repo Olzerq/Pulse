@@ -8,6 +8,9 @@ x-app-environment: &app-environment
   PULSE_REDIS_ADDR: redis:6379
   PULSE_KAFKA_BROKERS: kafka:19092
   PULSE_KAFKA_CHECK_RESULTS_TOPIC: ${PULSE_KAFKA_CHECK_RESULTS_TOPIC:-check.result}
+  PULSE_PINGER_POLL_INTERVAL: ${PULSE_PINGER_POLL_INTERVAL:-1s}
+  PULSE_PINGER_MAX_CONCURRENCY: ${PULSE_PINGER_MAX_CONCURRENCY:-20}
+  PULSE_PINGER_USER_AGENT: ${PULSE_PINGER_USER_AGENT:-Pulse/0.1}
 
 x-app-depends-on: &app-depends-on
   postgres:
@@ -57,7 +60,15 @@ services:
     image: pulse-pinger:dev
     restart: unless-stopped
     environment: *app-environment
-    depends_on: *app-depends-on
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     stop_grace_period: 15s
 
   consumer:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,9 @@ const (
 	defaultRedisAddr       = "localhost:6379"
 	defaultKafkaBroker     = "localhost:9092"
 	defaultKafkaTopic      = "check.result"
+	defaultPingerPoll      = time.Second
+	defaultPingerWorkers   = 20
+	defaultPingerUserAgent = "Pulse/0.1"
 )
 
 // Config is the process configuration shared by all Pulse binaries. Keeping
@@ -33,12 +37,23 @@ type Config struct {
 	RedisAddr        string
 	KafkaBrokers     []string
 	CheckResultTopic string
+	PingerPoll       time.Duration
+	PingerWorkers    int
+	PingerUserAgent  string
 }
 
 // Load reads configuration from the environment and applies local-development
 // defaults. Environment variable names deliberately use a PULSE_ prefix.
 func Load(service string) (Config, error) {
 	shutdownTimeout, err := durationFromEnv("PULSE_SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	pingerPoll, err := durationFromEnv("PULSE_PINGER_POLL_INTERVAL", defaultPingerPoll)
+	if err != nil {
+		return Config{}, err
+	}
+	pingerWorkers, err := intFromEnv("PULSE_PINGER_MAX_CONCURRENCY", defaultPingerWorkers)
 	if err != nil {
 		return Config{}, err
 	}
@@ -53,6 +68,9 @@ func Load(service string) (Config, error) {
 		RedisAddr:        envOrDefault("PULSE_REDIS_ADDR", defaultRedisAddr),
 		KafkaBrokers:     csvFromEnv("PULSE_KAFKA_BROKERS", defaultKafkaBroker),
 		CheckResultTopic: envOrDefault("PULSE_KAFKA_CHECK_RESULTS_TOPIC", defaultKafkaTopic),
+		PingerPoll:       pingerPoll,
+		PingerWorkers:    pingerWorkers,
+		PingerUserAgent:  envOrDefault("PULSE_PINGER_USER_AGENT", defaultPingerUserAgent),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -91,6 +109,15 @@ func (c Config) Validate() error {
 	if c.CheckResultTopic == "" {
 		errs = append(errs, errors.New("PULSE_KAFKA_CHECK_RESULTS_TOPIC is required"))
 	}
+	if c.PingerPoll < 100*time.Millisecond {
+		errs = append(errs, errors.New("PULSE_PINGER_POLL_INTERVAL must be at least 100ms"))
+	}
+	if c.PingerWorkers < 1 || c.PingerWorkers > 1000 {
+		errs = append(errs, errors.New("PULSE_PINGER_MAX_CONCURRENCY must be between 1 and 1000"))
+	}
+	if c.PingerUserAgent == "" {
+		errs = append(errs, errors.New("PULSE_PINGER_USER_AGENT is required"))
+	}
 
 	return errors.Join(errs...)
 }
@@ -113,6 +140,19 @@ func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) 
 		return 0, fmt.Errorf("parse %s: %w", key, err)
 	}
 	return duration, nil
+}
+
+func intFromEnv(key string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+
+	integer, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return integer, nil
 }
 
 func csvFromEnv(key, fallback string) []string {
