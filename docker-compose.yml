@@ -9,17 +9,11 @@ x-app-environment: &app-environment
   PULSE_KAFKA_BROKERS: kafka:19092
   PULSE_KAFKA_CHECK_RESULTS_TOPIC: ${PULSE_KAFKA_CHECK_RESULTS_TOPIC:-check.result}
   PULSE_KAFKA_PUBLISH_TIMEOUT: ${PULSE_KAFKA_PUBLISH_TIMEOUT:-10s}
+  PULSE_KAFKA_CONSUMER_GROUP: ${PULSE_KAFKA_CONSUMER_GROUP:-pulse-consumer}
+  PULSE_CONSUMER_PROCESS_TIMEOUT: ${PULSE_CONSUMER_PROCESS_TIMEOUT:-10s}
   PULSE_PINGER_POLL_INTERVAL: ${PULSE_PINGER_POLL_INTERVAL:-1s}
   PULSE_PINGER_MAX_CONCURRENCY: ${PULSE_PINGER_MAX_CONCURRENCY:-20}
   PULSE_PINGER_USER_AGENT: ${PULSE_PINGER_USER_AGENT:-Pulse/0.1}
-
-x-app-depends-on: &app-depends-on
-  postgres:
-    condition: service_healthy
-  redis:
-    condition: service_healthy
-  kafka:
-    condition: service_healthy
 
 services:
   api:
@@ -83,7 +77,15 @@ services:
     image: pulse-consumer:dev
     restart: unless-stopped
     environment: *app-environment
-    depends_on: *app-depends-on
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     stop_grace_period: 15s
 
   migrate:

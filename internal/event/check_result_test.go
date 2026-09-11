@@ -1,6 +1,7 @@
 package event
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -43,5 +44,53 @@ func TestNewCheckResultLeavesSuccessfulErrorNull(t *testing.T) {
 	got := NewCheckResult("event-id", check.Result{Success: true})
 	if got.Error != nil {
 		t.Errorf("Error = %q, want nil", *got.Error)
+	}
+}
+
+func TestCheckResultValidate(t *testing.T) {
+	t.Parallel()
+
+	valid := CheckResult{
+		EventID:    "2efad0fa-47c9-4ff5-b2c8-a61735ac1251",
+		MonitorID:  "9606cfdf-8eaf-4e9c-bd17-16e3e2b63748",
+		CheckedAt:  time.Now().UTC(),
+		Success:    true,
+		StatusCode: 200,
+		LatencyMS:  42,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestCheckResultValidateRejectsMalformedEvent(t *testing.T) {
+	t.Parallel()
+
+	emptyError := " "
+	invalid := CheckResult{
+		EventID:    "not-a-uuid",
+		MonitorID:  "also-not-a-uuid",
+		Success:    false,
+		StatusCode: 700,
+		LatencyMS:  -1,
+		Error:      &emptyError,
+	}
+
+	err := invalid.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want validation errors")
+	}
+	for _, message := range []string{
+		"event_id must be a UUID",
+		"monitor_id must be a UUID",
+		"checked_at is required",
+		"status_code must be zero or between 100 and 599",
+		"latency_ms must not be negative",
+		"unknown error_kind",
+		"a failed check requires an error",
+	} {
+		if !strings.Contains(err.Error(), message) {
+			t.Errorf("Validate() error = %q, want %q", err, message)
+		}
 	}
 }

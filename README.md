@@ -8,9 +8,9 @@ backend-разработкой и event-driven архитектурой.
 проверок, показывать текущее состояние сервисов и отправлять уведомления при
 падении или восстановлении.
 
-Сейчас завершён четвёртый этап разработки. Уже можно создавать и настраивать
-мониторы через HTTP API. Pinger проверяет активные URL по расписанию и отправляет
-каждый результат в Kafka.
+Сейчас завершён пятый этап разработки. Уже можно создавать и настраивать
+мониторы через HTTP API. Pinger проверяет активные URL по расписанию, отправляет
+результаты в Kafka, а Consumer сохраняет историю в PostgreSQL.
 
 ## Архитектура
 
@@ -18,7 +18,7 @@ backend-разработкой и event-driven архитектурой.
 
 - `api` принимает HTTP-запросы и управляет мониторами
 - `pinger` проверяет доступность сайтов и измеряет время ответа
-- `consumer` будет читать и обрабатывать результаты проверок из Kafka
+- `consumer` читает результаты из Kafka и сохраняет историю проверок
 
 Отдельная утилита `migrate` применяет изменения схемы PostgreSQL перед запуском
 API и сразу завершает работу.
@@ -56,6 +56,10 @@ Monitor
 - JSON-события с уникальным `event_id`
 - Kafka key равный `monitor_id` для сохранения порядка событий одного monitor
 - синхронная отправка в Kafka с `acks=all` и ограниченным timeout
+- Consumer group `pulse-consumer` с ручным подтверждением Kafka offsets
+- идемпотентная запись истории по уникальному `event_id`
+- проверка JSON-событий и соответствия Kafka key полю `monitor_id`
+- таблица `checks` с индексом для будущего получения истории monitor
 - конфигурация через переменные окружения
 - проверка конфигурации при запуске
 - структурированные JSON-логи через `log/slog`
@@ -67,8 +71,8 @@ Monitor
 - запуск Go-сервисов от непривилегированного пользователя
 - проверка состояния API через `GET /healthz`
 
-Consumer ещё не выполняет бизнес-логику. Он начнёт читать события и сохранять
-историю проверок в PostgreSQL на следующем этапе.
+Текущее состояние monitor в Redis пока не обновляется. Это будет сделано на
+следующем этапе.
 
 ## Стек
 
@@ -258,6 +262,38 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --from-beginning
 ```
 
+## Consumer и история проверок
+
+Consumer входит в Kafka group `pulse-consumer` и последовательно обрабатывает
+сообщения. Для каждого события порядок действий такой:
+
+```text
+прочитать сообщение
+→ проверить JSON и Kafka key
+→ записать результат в PostgreSQL
+→ подтвердить Kafka offset
+```
+
+Если PostgreSQL недоступен или commit offset завершился ошибкой, Consumer
+останавливается. Docker перезапускает процесс, после чего Kafka повторно отдаёт
+неподтверждённое сообщение. Повторная доставка безопасна, потому что `event_id`
+является первичным ключом таблицы `checks`, а повторный `INSERT` ничего не
+изменяет.
+
+У таблицы `checks` намеренно нет foreign key на `monitors`. Monitor может быть
+удалён, пока его результат ещё находится в Kafka. История при этом сохраняется,
+а сообщение не блокирует обработку всей partition.
+
+Посмотреть последние сохранённые проверки:
+
+```bash
+docker compose exec postgres psql -U pulse -d pulse -c \
+  "SELECT event_id, monitor_id, checked_at, success, status_code, latency_ms, error FROM checks ORDER BY checked_at DESC LIMIT 20;"
+```
+
+На этом этапе malformed message не подтверждается и останавливает Consumer.
+Dead letter queue будет отдельным улучшением после завершения основного MVP.
+
 ## Локальный запуск Go-сервисов
 
 Каждое приложение можно запустить отдельно:
@@ -288,6 +324,8 @@ Compose с опубликованными локальными портами.
 | `PULSE_KAFKA_BROKERS` | `localhost:9092` | Список Kafka brokers через запятую |
 | `PULSE_KAFKA_CHECK_RESULTS_TOPIC` | `check.result` | Topic с результатами проверок |
 | `PULSE_KAFKA_PUBLISH_TIMEOUT` | `10s` | Максимальное время одной публикации в Kafka |
+| `PULSE_KAFKA_CONSUMER_GROUP` | `pulse-consumer` | Consumer group для обработки результатов |
+| `PULSE_CONSUMER_PROCESS_TIMEOUT` | `10s` | Timeout записи в БД и подтверждения offset |
 | `PULSE_PINGER_POLL_INTERVAL` | `1s` | Частота загрузки активных monitors |
 | `PULSE_PINGER_MAX_CONCURRENCY` | `20` | Максимальное число одновременных HTTP-проверок |
 | `PULSE_PINGER_USER_AGENT` | `Pulse/0.1` | User-Agent исходящих запросов |
@@ -314,7 +352,7 @@ internal/
   check/            HTTP checker и CheckResult
   event/            JSON-контракты событий
   kafka/            Kafka publisher
-  postgres/         пул соединений и PostgreSQL store
+  postgres/         пул соединений, monitor store и check history store
   migrate/          применение миграций
   pinger/           scheduler и worker pool
   consumer/         процесс Consumer
@@ -336,9 +374,9 @@ docker compose config --quiet
 
 ## Что дальше
 
-На следующем этапе Consumer начнёт читать `check.result` из Kafka и сохранять
-историю проверок в PostgreSQL. Обработка будет идемпотентной по `event_id`, а
-Kafka offset будет подтверждаться только после успешной записи.
+На следующем этапе Consumer начнёт обновлять текущее состояние monitor в Redis,
+а API получит возможность его читать. Если состояния в Redis ещё нет, API будет
+возвращать `UNKNOWN`.
 
-Redis state и Telegram notifications будут подключаться позже согласно roadmap
-проекта.
+Переходы состояния и Telegram notifications будут подключаться позже согласно
+roadmap проекта.

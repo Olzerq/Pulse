@@ -25,7 +25,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	publisher := pulsekafka.NewCheckResultPublisher(
 		cfg.KafkaBrokers,
 		cfg.CheckResultTopic,
-		cfg.KafkaPublishTime,
+		cfg.KafkaPublishTimeout,
 	)
 	defer func() {
 		if err := publisher.Close(); err != nil {
@@ -41,7 +41,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		"max_concurrency", cfg.PingerWorkers,
 		"kafka_broker_count", len(cfg.KafkaBrokers),
 		"topic", cfg.CheckResultTopic,
-		"publish_timeout", cfg.KafkaPublishTime,
+		"publish_timeout", cfg.KafkaPublishTimeout,
 	)
 	return scheduler.Run(ctx)
 }
