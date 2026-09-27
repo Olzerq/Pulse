@@ -2,6 +2,7 @@ package pinger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -25,46 +26,60 @@ type resultPublisher interface {
 	Publish(context.Context, check.Result) (event.CheckResult, error)
 }
 
+type monitorLocker interface {
+	Acquire(context.Context, string, string, time.Duration) (bool, error)
+	Complete(context.Context, string, string, time.Duration) (bool, error)
+}
+
+type SchedulerConfig struct {
+	InstanceID           string
+	PollInterval         time.Duration
+	WorkerCount          int
+	LockGrace            time.Duration
+	PublishTimeout       time.Duration
+	LockOperationTimeout time.Duration
+}
+
 // Scheduler loads active monitors, tracks their next run in memory, and sends
-// due work to a bounded pool. Distributed coordination is added in Stage 8.
+// due work to a bounded pool. Redis leases coordinate separate instances.
 type Scheduler struct {
-	source       monitorSource
-	checker      httpChecker
-	publisher    resultPublisher
-	logger       *slog.Logger
-	pollInterval time.Duration
-	workerCount  int
+	source    monitorSource
+	checker   httpChecker
+	publisher resultPublisher
+	locker    monitorLocker
+	logger    *slog.Logger
+	config    SchedulerConfig
 }
 
 func NewScheduler(
 	source monitorSource,
 	checker httpChecker,
 	publisher resultPublisher,
+	locker monitorLocker,
 	logger *slog.Logger,
-	pollInterval time.Duration,
-	workerCount int,
+	config SchedulerConfig,
 ) *Scheduler {
 	return &Scheduler{
-		source:       source,
-		checker:      checker,
-		publisher:    publisher,
-		logger:       logger,
-		pollInterval: pollInterval,
-		workerCount:  workerCount,
+		source:    source,
+		checker:   checker,
+		publisher: publisher,
+		locker:    locker,
+		logger:    logger,
+		config:    config,
 	}
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {
 	jobs := make(chan monitor.Monitor)
-	completed := make(chan string, s.workerCount)
+	completed := make(chan completedJob, s.config.WorkerCount)
 
 	var workers sync.WaitGroup
-	for workerID := 1; workerID <= s.workerCount; workerID++ {
+	for workerID := 1; workerID <= s.config.WorkerCount; workerID++ {
 		workers.Add(1)
 		go s.runWorker(ctx, workerID, jobs, completed, &workers)
 	}
 
-	ticker := time.NewTicker(s.pollInterval)
+	ticker := time.NewTicker(s.config.PollInterval)
 	defer ticker.Stop()
 
 	schedule := make(map[string]scheduleEntry)
@@ -99,8 +114,15 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			workers.Wait()
 			s.logger.Info("pinger shutting down")
 			return nil
-		case monitorID := <-completed:
-			delete(inFlight, monitorID)
+		case completion := <-completed:
+			delete(inFlight, completion.monitorID)
+			if completion.retrySoon {
+				entry, exists := schedule[completion.monitorID]
+				if exists {
+					entry.nextRun = time.Now().Add(s.config.PollInterval)
+					schedule[completion.monitorID] = entry
+				}
+			}
 		case now := <-ticker.C:
 			load(now)
 		}
@@ -110,6 +132,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 type scheduleEntry struct {
 	nextRun  time.Time
 	interval time.Duration
+}
+
+type completedJob struct {
+	monitorID string
+	retrySoon bool
 }
 
 func (s *Scheduler) dispatchDue(
@@ -157,12 +184,40 @@ func (s *Scheduler) runWorker(
 	ctx context.Context,
 	workerID int,
 	jobs <-chan monitor.Monitor,
-	completed chan<- string,
+	completed chan<- completedJob,
 	workers *sync.WaitGroup,
 ) {
 	defer workers.Done()
+	ownerID := fmt.Sprintf("%s:%d", s.config.InstanceID, workerID)
 
 	for item := range jobs {
+		lockTTL := time.Duration(item.TimeoutMS)*time.Millisecond +
+			s.config.PublishTimeout + s.config.LockGrace
+		lockCtx, cancel := context.WithTimeout(ctx, s.config.LockOperationTimeout)
+		acquired, err := s.locker.Acquire(lockCtx, item.ID, ownerID, lockTTL)
+		cancel()
+		if err != nil {
+			s.logger.ErrorContext(ctx, "acquire monitor lock",
+				"instance_id", s.config.InstanceID,
+				"worker_id", workerID,
+				"monitor_id", item.ID,
+				"lock_ttl", lockTTL,
+				"error", err,
+			)
+			s.complete(ctx, completed, item.ID, true)
+			continue
+		}
+		if !acquired {
+			s.logger.DebugContext(ctx, "monitor check owned by another pinger",
+				"instance_id", s.config.InstanceID,
+				"worker_id", workerID,
+				"monitor_id", item.ID,
+			)
+			s.complete(ctx, completed, item.ID, true)
+			continue
+		}
+		acquiredAt := time.Now()
+
 		result := s.checker.Check(ctx, item)
 		published, err := s.publisher.Publish(ctx, result)
 		if err != nil {
@@ -171,16 +226,51 @@ func (s *Scheduler) runWorker(
 			s.logResult(workerID, published.EventID, result)
 		}
 
-		select {
-		case completed <- item.ID:
-		case <-ctx.Done():
-			return
+		holdFor := time.Duration(item.IntervalSeconds)*time.Second - time.Since(acquiredAt)
+		if ctx.Err() != nil {
+			holdFor = 0
 		}
+		completeCtx, completeCancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			s.config.LockOperationTimeout,
+		)
+		completedLock, completeErr := s.locker.Complete(completeCtx, item.ID, ownerID, holdFor)
+		completeCancel()
+		if completeErr != nil {
+			s.logger.Warn("complete monitor lock",
+				"instance_id", s.config.InstanceID,
+				"worker_id", workerID,
+				"monitor_id", item.ID,
+				"hold_for", holdFor,
+				"error", completeErr,
+			)
+		} else if !completedLock {
+			s.logger.Debug("monitor lock already expired",
+				"instance_id", s.config.InstanceID,
+				"worker_id", workerID,
+				"monitor_id", item.ID,
+			)
+		}
+
+		s.complete(ctx, completed, item.ID, false)
+	}
+}
+
+func (s *Scheduler) complete(
+	ctx context.Context,
+	completed chan<- completedJob,
+	monitorID string,
+	retrySoon bool,
+) {
+	select {
+	case completed <- completedJob{monitorID: monitorID, retrySoon: retrySoon}:
+	case <-ctx.Done():
 	}
 }
 
 func (s *Scheduler) logResult(workerID int, eventID string, result check.Result) {
 	attributes := []any{
+		"instance_id", s.config.InstanceID,
 		"worker_id", workerID,
 		"event_id", eventID,
 		"monitor_id", result.MonitorID,
@@ -214,6 +304,7 @@ func (s *Scheduler) logPublishError(
 	err error,
 ) {
 	attributes := []any{
+		"instance_id", s.config.InstanceID,
 		"worker_id", workerID,
 		"event_id", eventID,
 		"monitor_id", result.MonitorID,

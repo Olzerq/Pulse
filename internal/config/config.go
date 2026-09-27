@@ -28,6 +28,7 @@ const (
 	defaultPingerPoll             = time.Second
 	defaultPingerWorkers          = 20
 	defaultPingerUserAgent        = "Pulse/0.1"
+	defaultPingerLockGrace        = 5 * time.Second
 	defaultTelegramAPIURL         = "https://api.telegram.org"
 	defaultTelegramRequestTimeout = 10 * time.Second
 )
@@ -51,6 +52,7 @@ type Config struct {
 	PingerPoll             time.Duration
 	PingerWorkers          int
 	PingerUserAgent        string
+	PingerLockGrace        time.Duration
 	TelegramBotToken       string
 	TelegramChatID         string
 	TelegramAPIURL         string
@@ -84,6 +86,10 @@ func Load(service string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	pingerLockGrace, err := durationFromEnv("PULSE_PINGER_LOCK_GRACE", defaultPingerLockGrace)
+	if err != nil {
+		return Config{}, err
+	}
 	telegramRequestTimeout, err := durationFromEnv(
 		"PULSE_TELEGRAM_REQUEST_TIMEOUT",
 		defaultTelegramRequestTimeout,
@@ -109,6 +115,7 @@ func Load(service string) (Config, error) {
 		PingerPoll:             pingerPoll,
 		PingerWorkers:          pingerWorkers,
 		PingerUserAgent:        envOrDefault("PULSE_PINGER_USER_AGENT", defaultPingerUserAgent),
+		PingerLockGrace:        pingerLockGrace,
 		TelegramBotToken:       strings.TrimSpace(os.Getenv("PULSE_TELEGRAM_BOT_TOKEN")),
 		TelegramChatID:         strings.TrimSpace(os.Getenv("PULSE_TELEGRAM_CHAT_ID")),
 		TelegramAPIURL:         envOrDefault("PULSE_TELEGRAM_API_URL", defaultTelegramAPIURL),
@@ -171,6 +178,9 @@ func (c Config) Validate() error {
 	}
 	if c.PingerUserAgent == "" {
 		errs = append(errs, errors.New("PULSE_PINGER_USER_AGENT is required"))
+	}
+	if c.PingerLockGrace <= 0 {
+		errs = append(errs, errors.New("PULSE_PINGER_LOCK_GRACE must be greater than zero"))
 	}
 	if (c.TelegramBotToken == "") != (c.TelegramChatID == "") {
 		errs = append(errs, errors.New("PULSE_TELEGRAM_BOT_TOKEN and PULSE_TELEGRAM_CHAT_ID must be set together"))

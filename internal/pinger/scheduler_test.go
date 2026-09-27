@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,7 +30,10 @@ func TestSchedulerRespectsWorkerLimit(t *testing.T) {
 	checker := &blockingChecker{started: make(chan struct{}, len(items))}
 	publisher := &recordingPublisher{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	scheduler := NewScheduler(staticMonitorSource{items: items}, checker, publisher, logger, 20*time.Millisecond, 2)
+	scheduler := NewScheduler(
+		staticMonitorSource{items: items}, checker, publisher, newMemoryLocker(), logger,
+		testSchedulerConfig("pinger-a", 2),
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -90,9 +94,9 @@ func TestSchedulerPublishesCheckResult(t *testing.T) {
 		staticMonitorSource{items: []monitor.Monitor{item}},
 		fixedChecker{result: want},
 		publisher,
+		newMemoryLocker(),
 		logger,
-		20*time.Millisecond,
-		1,
+		testSchedulerConfig("pinger-a", 1),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,6 +123,58 @@ func TestSchedulerPublishesCheckResult(t *testing.T) {
 	}
 }
 
+func TestDistributedLockPreventsDuplicateCheck(t *testing.T) {
+	t.Parallel()
+
+	item := monitor.Monitor{
+		ID:                 "monitor-id",
+		IntervalSeconds:    5,
+		TimeoutMS:          1000,
+		ExpectedStatusCode: 200,
+	}
+	checker := &signalingChecker{started: make(chan struct{}, 2)}
+	locker := newMemoryLocker()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first := NewScheduler(
+		staticMonitorSource{items: []monitor.Monitor{item}}, checker, &recordingPublisher{}, locker, logger,
+		testSchedulerConfig("pinger-a", 1),
+	)
+	second := NewScheduler(
+		staticMonitorSource{items: []monitor.Monitor{item}}, checker, &recordingPublisher{}, locker, logger,
+		testSchedulerConfig("pinger-b", 1),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 2)
+	go func() { done <- first.Run(ctx) }()
+	go func() { done <- second.Run(ctx) }()
+
+	select {
+	case <-checker.started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("no check started")
+	}
+	select {
+	case <-checker.started:
+		cancel()
+		t.Fatal("both Pinger instances checked the same monitor")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	cancel()
+	for range 2 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("scheduler did not stop in time")
+		}
+	}
+}
+
 type staticMonitorSource struct {
 	items []monitor.Monitor
 }
@@ -137,12 +193,78 @@ type fixedChecker struct {
 	result check.Result
 }
 
+type signalingChecker struct {
+	started chan struct{}
+}
+
+func (c *signalingChecker) Check(_ context.Context, item monitor.Monitor) check.Result {
+	c.started <- struct{}{}
+	return check.Result{
+		MonitorID:  item.ID,
+		CheckedAt:  time.Now().UTC(),
+		Success:    true,
+		StatusCode: item.ExpectedStatusCode,
+	}
+}
+
 func (c fixedChecker) Check(context.Context, monitor.Monitor) check.Result {
 	return c.result
 }
 
 type recordingPublisher struct {
 	published chan check.Result
+}
+
+func testSchedulerConfig(instanceID string, workerCount int) SchedulerConfig {
+	return SchedulerConfig{
+		InstanceID:           instanceID,
+		PollInterval:         20 * time.Millisecond,
+		WorkerCount:          workerCount,
+		LockGrace:            time.Second,
+		PublishTimeout:       time.Second,
+		LockOperationTimeout: time.Second,
+	}
+}
+
+type memoryLocker struct {
+	mu     sync.Mutex
+	owners map[string]string
+}
+
+func newMemoryLocker() *memoryLocker {
+	return &memoryLocker{owners: make(map[string]string)}
+}
+
+func (l *memoryLocker) Acquire(
+	_ context.Context,
+	monitorID string,
+	owner string,
+	_ time.Duration,
+) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, exists := l.owners[monitorID]; exists {
+		return false, nil
+	}
+	l.owners[monitorID] = owner
+	return true, nil
+}
+
+func (l *memoryLocker) Complete(
+	_ context.Context,
+	monitorID string,
+	owner string,
+	holdFor time.Duration,
+) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.owners[monitorID] != owner {
+		return false, nil
+	}
+	if holdFor <= 0 {
+		delete(l.owners, monitorID)
+	}
+	return true, nil
 }
 
 func (p *recordingPublisher) Publish(_ context.Context, result check.Result) (event.CheckResult, error) {

@@ -43,6 +43,37 @@ func (c *Client) Set(ctx context.Context, key, value string) error {
 	return nil
 }
 
+func (c *Client) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	acquired, err := c.inner.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("set Redis key if absent: %w", err)
+	}
+	return acquired, nil
+}
+
+func (c *Client) CompleteIfValue(
+	ctx context.Context,
+	key string,
+	value string,
+	holdFor time.Duration,
+) (bool, error) {
+	const script = `
+if redis.call("get", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+if tonumber(ARGV[2]) > 0 then
+  return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+return redis.call("del", KEYS[1])
+`
+
+	updated, err := c.inner.Eval(ctx, script, []string{key}, value, holdFor.Milliseconds()).Int64()
+	if err != nil {
+		return false, fmt.Errorf("complete owned Redis key: %w", err)
+	}
+	return updated == 1, nil
+}
+
 func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	value, err := c.inner.Get(ctx, key).Result()
 	if errors.Is(err, goredis.Nil) {

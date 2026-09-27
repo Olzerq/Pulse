@@ -59,6 +59,16 @@ func TestTelegramConfiguration(t *testing.T) {
 	}
 }
 
+func TestPingerLockGraceMustBePositive(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.PingerLockGrace = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want Pinger lock grace validation error")
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		Service:                "test",
@@ -77,6 +87,7 @@ func validConfig() Config {
 		PingerPoll:             time.Second,
 		PingerWorkers:          1,
 		PingerUserAgent:        "Pulse/Test",
+		PingerLockGrace:        time.Second,
 		TelegramAPIURL:         "https://api.telegram.org",
 		TelegramRequestTimeout: time.Second,
 	}

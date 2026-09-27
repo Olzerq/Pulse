@@ -72,6 +72,8 @@ Monitor
 - журнал переходов и статуса доставки в PostgreSQL
 - Telegram alerts с повторной попыткой через Kafka при временной ошибке
 - защита от обычной повторной отправки alert по тому же `event_id`
+- несколько экземпляров Pinger в Docker Compose
+- Redis locks с TTL для защиты от одновременной проверки одного monitor
 - конфигурация через переменные окружения
 - проверка конфигурации при запуске
 - структурированные JSON-логи через `log/slog`
@@ -92,8 +94,9 @@ Monitor
 - Docker и Docker Compose
 
 Для работы с Redis используется `go-redis`, для Kafka используется `kafka-go`,
-а Telegram Bot API вызывается стандартным HTTP-клиентом Go. На следующих
-этапах появятся distributed locks и Prometheus.
+а Telegram Bot API вызывается стандартным HTTP-клиентом Go. Redis также
+координирует несколько экземпляров Pinger. На следующих этапах появятся
+Prometheus metrics и web UI.
 
 ## Быстрый запуск
 
@@ -105,8 +108,9 @@ Monitor
 docker compose up --build
 ```
 
-Compose соберёт Go-приложения, запустит инфраструктуру, применит миграции,
-создаст Kafka topic `check.result` с тремя partitions и дождётся готовности API.
+Compose соберёт Go-приложения, запустит инфраструктуру и два экземпляра Pinger,
+применит миграции, создаст Kafka topic `check.result` с тремя partitions и
+дождётся готовности API.
 
 После запуска API будет доступен по адресу:
 
@@ -233,7 +237,8 @@ Pinger загружает активные monitors из PostgreSQL. Новый 
 ближайшем цикле планировщика, а следующие проверки запускаются через заданный
 `interval_seconds`.
 
-Посмотреть результаты публикации можно в логах:
+По умолчанию Docker Compose запускает два экземпляра Pinger. Посмотреть их
+результаты публикации можно одной командой:
 
 ```bash
 docker compose logs -f pinger
@@ -257,6 +262,37 @@ docker compose logs -f pinger
 `error`. Возможные категории: `timeout`, `network`, `request` и
 `unexpected_status`. Ошибка отправки в Kafka записывается отдельно с уровнем
 `ERROR`.
+
+## Несколько экземпляров Pinger
+
+Перед HTTP-запросом worker пытается создать в Redis ключ
+`monitor:{id}:lock` командой `SET NX` с TTL. В значении хранится уникальный ID
+экземпляра и локального worker. Только получивший lock worker выполняет проверку
+и публикует результат в Kafka. Остальные экземпляры пропускают этот цикл.
+
+Во время проверки TTL складывается из timeout конкретного monitor, timeout
+публикации в Kafka и небольшого запаса `PULSE_PINGER_LOCK_GRACE`. После
+публикации worker атомарно сокращает TTL до оставшейся части
+`interval_seconds`. Поэтому другой экземпляр не повторит уже завершённую
+проверку в том же интервале. Если Pinger аварийно завершится, Redis сам удалит
+lock после TTL. Любое изменение lock выполняется только при совпадении ID
+владельца, поэтому старый worker не может изменить уже обновлённый lock.
+
+Изменить число экземпляров можно через `.env`:
+
+```dotenv
+PULSE_PINGER_REPLICAS=3
+```
+
+Или только для одного запуска:
+
+```bash
+docker compose up --build --scale pinger=3
+```
+
+Если Redis временно недоступен, Pinger не выполняет проверку без lock. Ошибка
+появляется в логах, а следующий цикл снова пытается получить lock. Такой выбор
+защищает от duplicate checks во время проблем с координацией.
 
 ## События Kafka
 
@@ -437,6 +473,8 @@ Compose с опубликованными локальными портами.
 | `PULSE_PINGER_POLL_INTERVAL` | `1s` | Частота загрузки активных monitors |
 | `PULSE_PINGER_MAX_CONCURRENCY` | `20` | Максимальное число одновременных HTTP-проверок |
 | `PULSE_PINGER_USER_AGENT` | `Pulse/0.1` | User-Agent исходящих запросов |
+| `PULSE_PINGER_LOCK_GRACE` | `5s` | Запас времени для TTL Redis lock |
+| `PULSE_PINGER_REPLICAS` | `2` | Число Pinger в Docker Compose |
 | `PULSE_TELEGRAM_BOT_TOKEN` | пусто | Токен Telegram bot, секрет |
 | `PULSE_TELEGRAM_CHAT_ID` | пусто | Chat ID для уведомлений |
 | `PULSE_TELEGRAM_API_URL` | `https://api.telegram.org` | Базовый URL Telegram Bot API |
@@ -466,7 +504,7 @@ internal/
   event/            JSON-контракты событий
   kafka/            Kafka publisher
   postgres/         пул соединений, monitor store и check history store
-  redis/            клиент Redis и хранилище текущего состояния
+  redis/            клиент Redis, текущее состояние и distributed locks
   notification/     Telegram client и формат сообщений
   migrate/          применение миграций
   pinger/           scheduler и worker pool
@@ -489,9 +527,5 @@ docker compose config --quiet
 
 ## Что дальше
 
-На следующем этапе можно будет запускать несколько экземпляров Pinger. Redis
-distributed locks с TTL не позволят разным workers одновременно проверять один
-monitor и создавать duplicate checks.
-
-После этого по roadmap останутся observability, минимальный web UI,
-дополнительные тесты, Docker hardening и Kubernetes manifests.
+По roadmap остались observability, минимальный web UI, дополнительные тесты,
+Docker hardening и Kubernetes manifests.
