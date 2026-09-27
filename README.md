@@ -8,9 +8,11 @@ backend-разработкой и event-driven архитектурой.
 проверок, показывать текущее состояние сервисов и отправлять уведомления при
 падении или восстановлении.
 
-Сейчас завершён пятый этап разработки. Уже можно создавать и настраивать
+Сейчас завершён седьмой этап разработки. Уже можно создавать и настраивать
 мониторы через HTTP API. Pinger проверяет активные URL по расписанию, отправляет
-результаты в Kafka, а Consumer сохраняет историю в PostgreSQL.
+результаты в Kafka, а Consumer сохраняет историю в PostgreSQL и актуальное
+состояние в Redis. API позволяет получить последний известный статус monitor,
+а при падении и восстановлении Pulse может отправить сообщение в Telegram.
 
 ## Архитектура
 
@@ -18,7 +20,8 @@ backend-разработкой и event-driven архитектурой.
 
 - `api` принимает HTTP-запросы и управляет мониторами
 - `pinger` проверяет доступность сайтов и измеряет время ответа
-- `consumer` читает результаты из Kafka и сохраняет историю проверок
+- `consumer` читает результаты из Kafka, сохраняет историю, обновляет статус и
+  обрабатывает уведомления
 
 Отдельная утилита `migrate` применяет изменения схемы PostgreSQL перед запуском
 API и сразу завершает работу.
@@ -60,6 +63,15 @@ Monitor
 - идемпотентная запись истории по уникальному `event_id`
 - проверка JSON-событий и соответствия Kafka key полю `monitor_id`
 - таблица `checks` с индексом для будущего получения истории monitor
+- актуальное состояние каждого monitor в Redis без ограничения срока хранения
+- состояния `UNKNOWN`, `UP` и `DOWN`
+- получение состояния через `GET /api/v1/monitors/{id}/status`
+- проверка существования monitor перед чтением состояния из Redis
+- обнаружение переходов `UP -> DOWN` и `DOWN -> UP`
+- отсутствие уведомлений при начальном переходе из `UNKNOWN`
+- журнал переходов и статуса доставки в PostgreSQL
+- Telegram alerts с повторной попыткой через Kafka при временной ошибке
+- защита от обычной повторной отправки alert по тому же `event_id`
 - конфигурация через переменные окружения
 - проверка конфигурации при запуске
 - структурированные JSON-логи через `log/slog`
@@ -71,9 +83,6 @@ Monitor
 - запуск Go-сервисов от непривилегированного пользователя
 - проверка состояния API через `GET /healthz`
 
-Текущее состояние monitor в Redis пока не обновляется. Это будет сделано на
-следующем этапе.
-
 ## Стек
 
 - Go 1.23
@@ -82,8 +91,9 @@ Monitor
 - Apache Kafka 4
 - Docker и Docker Compose
 
-На следующих этапах появятся `go-redis`, `kafka-go`, Prometheus и интеграция с
-Telegram Bot API.
+Для работы с Redis используется `go-redis`, для Kafka используется `kafka-go`,
+а Telegram Bot API вызывается стандартным HTTP-клиентом Go. На следующих
+этапах появятся distributed locks и Prometheus.
 
 ## Быстрый запуск
 
@@ -174,6 +184,30 @@ curl http://localhost:8080/api/v1/monitors
 ```bash
 curl http://localhost:8080/api/v1/monitors/{id}
 ```
+
+Получить его текущее состояние:
+
+```bash
+curl http://localhost:8080/api/v1/monitors/{id}/status
+```
+
+После успешной проверки ответ выглядит примерно так:
+
+```json
+{
+  "state": {
+    "monitor_id": "9606cfdf-8eaf-4e9c-bd17-16e3e2b63748",
+    "status": "UP",
+    "checked_at": "2026-09-11T12:00:00Z",
+    "status_code": 200,
+    "latency_ms": 42,
+    "error": null
+  }
+}
+```
+
+Если monitor существует, но ещё ни разу не проверялся, API возвращает статус
+`UNKNOWN`. Поля последней проверки в таком ответе равны `null`.
 
 Изменить monitor:
 
@@ -271,14 +305,18 @@ Consumer входит в Kafka group `pulse-consumer` и последовате�
 прочитать сообщение
 → проверить JSON и Kafka key
 → записать результат в PostgreSQL
+→ прочитать прошлое состояние из Redis
+→ определить и сохранить переход состояния
+→ отправить или пропустить Telegram notification
+→ обновить текущее состояние в Redis
 → подтвердить Kafka offset
 ```
 
-Если PostgreSQL недоступен или commit offset завершился ошибкой, Consumer
-останавливается. Docker перезапускает процесс, после чего Kafka повторно отдаёт
-неподтверждённое сообщение. Повторная доставка безопасна, потому что `event_id`
-является первичным ключом таблицы `checks`, а повторный `INSERT` ничего не
-изменяет.
+Если PostgreSQL, Redis или настроенный Telegram недоступен либо commit offset
+завершился ошибкой, Consumer останавливается. Docker перезапускает процесс,
+после чего Kafka повторно отдаёт неподтверждённое сообщение. Повторная доставка
+безопасна, потому что `event_id` является первичным ключом таблиц `checks` и
+`status_transitions`, а запись в Redis заменяет прошлое текущее состояние.
 
 У таблицы `checks` намеренно нет foreign key на `monitors`. Monitor может быть
 удалён, пока его результат ещё находится в Kafka. История при этом сохраняется,
@@ -293,6 +331,75 @@ docker compose exec postgres psql -U pulse -d pulse -c \
 
 На этом этапе malformed message не подтверждается и останавливает Consumer.
 Dead letter queue будет отдельным улучшением после завершения основного MVP.
+
+## Текущее состояние в Redis
+
+Consumer преобразует каждый результат проверки в одно из двух состояний:
+
+- `UP`, если HTTP-проверка прошла успешно
+- `DOWN`, если возникла ошибка или получен неожиданный HTTP status
+
+Состояние хранится в Redis под ключом `monitor:{id}:status` в формате JSON.
+Redis содержит только последний результат и нужен для быстрого чтения через
+API. Полная история остаётся в PostgreSQL. У ключа нет TTL, поэтому редкие
+проверки не превращаются в `UNKNOWN` только из-за прошедшего времени. Поле
+`last_status_change_at` сохраняется при повторных результатах того же типа и
+меняется только вместе со статусом.
+
+Если ключ отсутствует, это не считается ошибкой Redis. API возвращает
+`UNKNOWN`, потому что monitor мог быть создан совсем недавно. Перед чтением
+Redis API проверяет monitor в PostgreSQL, поэтому для удалённого или
+несуществующего ID возвращается `404`, даже если старый ключ ещё сохранился.
+
+Посмотреть значение напрямую в локальном окружении:
+
+```bash
+docker compose exec redis redis-cli GET monitor:{id}:status
+```
+
+## Переходы и Telegram
+
+Начальный результат переводит monitor из `UNKNOWN` в `UP` или `DOWN`, но не
+отправляет сообщение. Уведомление создаётся только для двух переходов:
+
+```text
+UP -> DOWN    alert о падении
+DOWN -> UP    сообщение о восстановлении
+```
+
+Повторные `UP -> UP` и `DOWN -> DOWN` обновляют текущее состояние, но не
+создают новый alert. Каждый значимый переход записывается в таблицу
+`status_transitions` по уникальному `event_id`.
+
+Telegram по умолчанию выключен. Чтобы включить его, создайте локальный файл
+`.env` и задайте оба значения:
+
+```dotenv
+PULSE_TELEGRAM_BOT_TOKEN=токен_бота
+PULSE_TELEGRAM_CHAT_ID=идентификатор_чата
+```
+
+Если значения не заданы, переход записывается со статусом `skipped`, после чего
+Consumer продолжает работу. Токен не попадает в логи и не должен добавляться в
+репозиторий.
+
+При включённом Telegram Consumer сначала отправляет alert, отмечает его как
+`sent`, затем обновляет Redis и подтверждает Kafka offset. Если Telegram
+временно недоступен, состояние и offset не меняются, а сообщение Kafka будет
+обработано повторно. Статус `sent` защищает от обычной повторной отправки после
+сбоя Redis или commit offset.
+
+Telegram не поддерживает idempotency key. Поэтому остаётся небольшой крайний
+случай: если Telegram принял сообщение, а Consumer завершился до записи
+`sent` в PostgreSQL, после перезапуска alert может прийти повторно. Такая
+at-least-once семантика выбрана вместо риска потерять уведомление.
+
+Посмотреть последние переходы:
+
+```bash
+docker compose exec postgres psql -U pulse -d pulse -c \
+  "SELECT event_id, monitor_id, previous_status, new_status, changed_at, notification_status FROM status_transitions ORDER BY changed_at DESC LIMIT 20;"
+```
 
 ## Локальный запуск Go-сервисов
 
@@ -321,6 +428,7 @@ Compose с опубликованными локальными портами.
 | `PULSE_SHUTDOWN_TIMEOUT` | `10s` | Время на корректную остановку HTTP-сервера |
 | `PULSE_POSTGRES_URL` | локальный DSN | Подключение к PostgreSQL |
 | `PULSE_REDIS_ADDR` | `localhost:6379` | Адрес Redis |
+| `PULSE_REDIS_OPERATION_TIMEOUT` | `2s` | Timeout подключения и операций Redis |
 | `PULSE_KAFKA_BROKERS` | `localhost:9092` | Список Kafka brokers через запятую |
 | `PULSE_KAFKA_CHECK_RESULTS_TOPIC` | `check.result` | Topic с результатами проверок |
 | `PULSE_KAFKA_PUBLISH_TIMEOUT` | `10s` | Максимальное время одной публикации в Kafka |
@@ -329,6 +437,10 @@ Compose с опубликованными локальными портами.
 | `PULSE_PINGER_POLL_INTERVAL` | `1s` | Частота загрузки активных monitors |
 | `PULSE_PINGER_MAX_CONCURRENCY` | `20` | Максимальное число одновременных HTTP-проверок |
 | `PULSE_PINGER_USER_AGENT` | `Pulse/0.1` | User-Agent исходящих запросов |
+| `PULSE_TELEGRAM_BOT_TOKEN` | пусто | Токен Telegram bot, секрет |
+| `PULSE_TELEGRAM_CHAT_ID` | пусто | Chat ID для уведомлений |
+| `PULSE_TELEGRAM_API_URL` | `https://api.telegram.org` | Базовый URL Telegram Bot API |
+| `PULSE_TELEGRAM_REQUEST_TIMEOUT` | `10s` | Timeout запроса к Telegram |
 
 Значения в Docker Compose предназначены только для локальной разработки.
 Секреты не следует добавлять в репозиторий. Локальный файл `.env` уже указан в
@@ -349,10 +461,13 @@ internal/
   logging/          настройка структурированных логов
   api/              HTTP-сервер и handlers
   monitor/          модель monitor и правила валидации
+  monitorstate/     модель текущего состояния UNKNOWN, UP или DOWN
   check/            HTTP checker и CheckResult
   event/            JSON-контракты событий
   kafka/            Kafka publisher
   postgres/         пул соединений, monitor store и check history store
+  redis/            клиент Redis и хранилище текущего состояния
+  notification/     Telegram client и формат сообщений
   migrate/          применение миграций
   pinger/           scheduler и worker pool
   consumer/         процесс Consumer
@@ -374,9 +489,9 @@ docker compose config --quiet
 
 ## Что дальше
 
-На следующем этапе Consumer начнёт обновлять текущее состояние monitor в Redis,
-а API получит возможность его читать. Если состояния в Redis ещё нет, API будет
-возвращать `UNKNOWN`.
+На следующем этапе можно будет запускать несколько экземпляров Pinger. Redis
+distributed locks с TTL не позволят разным workers одновременно проверять один
+monitor и создавать duplicate checks.
 
-Переходы состояния и Telegram notifications будут подключаться позже согласно
-roadmap проекта.
+После этого по roadmap останутся observability, минимальный web UI,
+дополнительные тесты, Docker hardening и Kubernetes manifests.

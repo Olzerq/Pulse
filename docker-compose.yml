@@ -6,6 +6,7 @@ x-app-environment: &app-environment
   PULSE_SHUTDOWN_TIMEOUT: ${PULSE_SHUTDOWN_TIMEOUT:-10s}
   PULSE_POSTGRES_URL: postgres://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
   PULSE_REDIS_ADDR: redis:6379
+  PULSE_REDIS_OPERATION_TIMEOUT: ${PULSE_REDIS_OPERATION_TIMEOUT:-2s}
   PULSE_KAFKA_BROKERS: kafka:19092
   PULSE_KAFKA_CHECK_RESULTS_TOPIC: ${PULSE_KAFKA_CHECK_RESULTS_TOPIC:-check.result}
   PULSE_KAFKA_PUBLISH_TIMEOUT: ${PULSE_KAFKA_PUBLISH_TIMEOUT:-10s}
@@ -14,6 +15,10 @@ x-app-environment: &app-environment
   PULSE_PINGER_POLL_INTERVAL: ${PULSE_PINGER_POLL_INTERVAL:-1s}
   PULSE_PINGER_MAX_CONCURRENCY: ${PULSE_PINGER_MAX_CONCURRENCY:-20}
   PULSE_PINGER_USER_AGENT: ${PULSE_PINGER_USER_AGENT:-Pulse/0.1}
+  PULSE_TELEGRAM_BOT_TOKEN: ${PULSE_TELEGRAM_BOT_TOKEN:-}
+  PULSE_TELEGRAM_CHAT_ID: ${PULSE_TELEGRAM_CHAT_ID:-}
+  PULSE_TELEGRAM_API_URL: ${PULSE_TELEGRAM_API_URL:-https://api.telegram.org}
+  PULSE_TELEGRAM_REQUEST_TIMEOUT: ${PULSE_TELEGRAM_REQUEST_TIMEOUT:-10s}
 
 services:
   api:
@@ -79,6 +84,8 @@ services:
     environment: *app-environment
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
