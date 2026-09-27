@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"github.com/Olzerq/Pulse/internal/monitor"
+	"github.com/Olzerq/Pulse/internal/monitorstate"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -28,13 +29,18 @@ type monitorStore interface {
 	Delete(context.Context, string) error
 }
 
+type stateStore interface {
+	Get(context.Context, string) (monitorstate.State, error)
+}
+
 type monitorHandler struct {
 	logger *slog.Logger
 	store  monitorStore
+	states stateStore
 }
 
-func newMonitorHandler(logger *slog.Logger, store monitorStore) *monitorHandler {
-	return &monitorHandler{logger: logger, store: store}
+func newMonitorHandler(logger *slog.Logger, store monitorStore, states stateStore) *monitorHandler {
+	return &monitorHandler{logger: logger, store: store, states: states}
 }
 
 func (h *monitorHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +65,25 @@ func (h *monitorHandler) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"monitor": item})
+}
+
+func (h *monitorHandler) getStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := monitorID(w, r)
+	if !ok {
+		return
+	}
+
+	if _, err := h.store.Get(r.Context(), id); h.handleStoreError(w, r, "get monitor for status", err) {
+		return
+	}
+
+	state, err := h.states.Get(r.Context(), id)
+	if err != nil {
+		h.internalError(w, r, "get monitor status", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"state": state})
 }
 
 func (h *monitorHandler) create(w http.ResponseWriter, r *http.Request) {

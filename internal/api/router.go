@@ -9,12 +9,12 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-func newRouter(logger *slog.Logger, store monitorStore) http.Handler {
+func newRouter(logger *slog.Logger, store monitorStore, states stateStore) http.Handler {
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(recoverer(logger))
 
-	handler := newMonitorHandler(logger, store)
+	handler := newMonitorHandler(logger, store, states)
 
 	router.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -23,6 +23,7 @@ func newRouter(logger *slog.Logger, store monitorStore) http.Handler {
 	router.Get("/api/v1/monitors", handler.list)
 	router.Post("/api/v1/monitors", handler.create)
 	router.Get("/api/v1/monitors/{monitorID}", handler.get)
+	router.Get("/api/v1/monitors/{monitorID}/status", handler.getStatus)
 	router.Patch("/api/v1/monitors/{monitorID}", handler.update)
 	router.Delete("/api/v1/monitors/{monitorID}", handler.delete)
 

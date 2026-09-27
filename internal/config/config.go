@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -18,6 +19,7 @@ const (
 	defaultShutdownTimeout        = 10 * time.Second
 	defaultPostgresURL            = "postgres://pulse:pulse@localhost:5432/pulse?sslmode=disable"
 	defaultRedisAddr              = "localhost:6379"
+	defaultRedisOperationTimeout  = 2 * time.Second
 	defaultKafkaBroker            = "localhost:9092"
 	defaultKafkaTopic             = "check.result"
 	defaultKafkaPublishTimeout    = 10 * time.Second
@@ -26,6 +28,8 @@ const (
 	defaultPingerPoll             = time.Second
 	defaultPingerWorkers          = 20
 	defaultPingerUserAgent        = "Pulse/0.1"
+	defaultTelegramAPIURL         = "https://api.telegram.org"
+	defaultTelegramRequestTimeout = 10 * time.Second
 )
 
 // Config is the process configuration shared by all Pulse binaries. Keeping
@@ -38,6 +42,7 @@ type Config struct {
 	ShutdownTimeout        time.Duration
 	PostgresURL            string
 	RedisAddr              string
+	RedisOperationTimeout  time.Duration
 	KafkaBrokers           []string
 	CheckResultTopic       string
 	KafkaPublishTimeout    time.Duration
@@ -46,6 +51,10 @@ type Config struct {
 	PingerPoll             time.Duration
 	PingerWorkers          int
 	PingerUserAgent        string
+	TelegramBotToken       string
+	TelegramChatID         string
+	TelegramAPIURL         string
+	TelegramRequestTimeout time.Duration
 }
 
 // Load reads configuration from the environment and applies local-development
@@ -63,11 +72,22 @@ func Load(service string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	redisOperationTimeout, err := durationFromEnv("PULSE_REDIS_OPERATION_TIMEOUT", defaultRedisOperationTimeout)
+	if err != nil {
+		return Config{}, err
+	}
 	pingerPoll, err := durationFromEnv("PULSE_PINGER_POLL_INTERVAL", defaultPingerPoll)
 	if err != nil {
 		return Config{}, err
 	}
 	pingerWorkers, err := intFromEnv("PULSE_PINGER_MAX_CONCURRENCY", defaultPingerWorkers)
+	if err != nil {
+		return Config{}, err
+	}
+	telegramRequestTimeout, err := durationFromEnv(
+		"PULSE_TELEGRAM_REQUEST_TIMEOUT",
+		defaultTelegramRequestTimeout,
+	)
 	if err != nil {
 		return Config{}, err
 	}
@@ -80,6 +100,7 @@ func Load(service string) (Config, error) {
 		ShutdownTimeout:        shutdownTimeout,
 		PostgresURL:            envOrDefault("PULSE_POSTGRES_URL", defaultPostgresURL),
 		RedisAddr:              envOrDefault("PULSE_REDIS_ADDR", defaultRedisAddr),
+		RedisOperationTimeout:  redisOperationTimeout,
 		KafkaBrokers:           csvFromEnv("PULSE_KAFKA_BROKERS", defaultKafkaBroker),
 		CheckResultTopic:       envOrDefault("PULSE_KAFKA_CHECK_RESULTS_TOPIC", defaultKafkaTopic),
 		KafkaPublishTimeout:    kafkaPublishTimeout,
@@ -88,6 +109,10 @@ func Load(service string) (Config, error) {
 		PingerPoll:             pingerPoll,
 		PingerWorkers:          pingerWorkers,
 		PingerUserAgent:        envOrDefault("PULSE_PINGER_USER_AGENT", defaultPingerUserAgent),
+		TelegramBotToken:       strings.TrimSpace(os.Getenv("PULSE_TELEGRAM_BOT_TOKEN")),
+		TelegramChatID:         strings.TrimSpace(os.Getenv("PULSE_TELEGRAM_CHAT_ID")),
+		TelegramAPIURL:         envOrDefault("PULSE_TELEGRAM_API_URL", defaultTelegramAPIURL),
+		TelegramRequestTimeout: telegramRequestTimeout,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -120,6 +145,9 @@ func (c Config) Validate() error {
 	if c.RedisAddr == "" {
 		errs = append(errs, errors.New("PULSE_REDIS_ADDR is required"))
 	}
+	if c.RedisOperationTimeout <= 0 {
+		errs = append(errs, errors.New("PULSE_REDIS_OPERATION_TIMEOUT must be greater than zero"))
+	}
 	if len(c.KafkaBrokers) == 0 {
 		errs = append(errs, errors.New("PULSE_KAFKA_BROKERS must contain at least one broker"))
 	}
@@ -144,8 +172,23 @@ func (c Config) Validate() error {
 	if c.PingerUserAgent == "" {
 		errs = append(errs, errors.New("PULSE_PINGER_USER_AGENT is required"))
 	}
+	if (c.TelegramBotToken == "") != (c.TelegramChatID == "") {
+		errs = append(errs, errors.New("PULSE_TELEGRAM_BOT_TOKEN and PULSE_TELEGRAM_CHAT_ID must be set together"))
+	}
+	if c.TelegramAPIURL == "" {
+		errs = append(errs, errors.New("PULSE_TELEGRAM_API_URL is required"))
+	} else if parsed, err := url.ParseRequestURI(c.TelegramAPIURL); err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		errs = append(errs, errors.New("PULSE_TELEGRAM_API_URL must be an absolute HTTP URL"))
+	}
+	if c.TelegramRequestTimeout <= 0 {
+		errs = append(errs, errors.New("PULSE_TELEGRAM_REQUEST_TIMEOUT must be greater than zero"))
+	}
 
 	return errors.Join(errs...)
+}
+
+func (c Config) TelegramEnabled() bool {
+	return c.TelegramBotToken != "" && c.TelegramChatID != ""
 }
 
 func envOrDefault(key, fallback string) string {

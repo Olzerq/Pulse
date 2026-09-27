@@ -11,6 +11,7 @@ import (
 
 	"github.com/Olzerq/Pulse/internal/config"
 	"github.com/Olzerq/Pulse/internal/postgres"
+	pulseredis "github.com/Olzerq/Pulse/internal/redis"
 )
 
 // Run connects the API to PostgreSQL, starts the HTTP server, and drains it
@@ -23,8 +24,20 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	defer pool.Close()
 	logger.InfoContext(ctx, "connected to PostgreSQL")
 
+	redisClient, err := pulseredis.Open(ctx, cfg.RedisAddr, cfg.RedisOperationTimeout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Warn("close Redis client", "error", err)
+		}
+	}()
+	logger.InfoContext(ctx, "connected to Redis")
+
 	store := postgres.NewMonitorStore(pool)
-	router := newRouter(logger, store)
+	stateStore := pulseredis.NewStateStore(redisClient)
+	router := newRouter(logger, store, stateStore)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
