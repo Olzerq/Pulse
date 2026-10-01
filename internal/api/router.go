@@ -15,6 +15,7 @@ func newRouter(
 	logger *slog.Logger,
 	store monitorStore,
 	states stateStore,
+	history historyStore,
 	metrics *observability.Metrics,
 	observabilityHandler http.Handler,
 ) http.Handler {
@@ -23,7 +24,8 @@ func newRouter(
 	router.Use(requestObserver(logger, metrics))
 	router.Use(recoverer(logger))
 
-	handler := newMonitorHandler(logger, store, states)
+	handler := newMonitorHandler(logger, store, states, history)
+	web := newWebHandler(logger, store, states, history)
 
 	router.Handle("/metrics", observabilityHandler)
 	router.Handle("/healthz", observabilityHandler)
@@ -34,8 +36,17 @@ func newRouter(
 	router.Post("/api/v1/monitors", handler.create)
 	router.Get("/api/v1/monitors/{monitorID}", handler.get)
 	router.Get("/api/v1/monitors/{monitorID}/status", handler.getStatus)
+	router.Get("/api/v1/monitors/{monitorID}/checks", handler.getChecks)
 	router.Patch("/api/v1/monitors/{monitorID}", handler.update)
 	router.Delete("/api/v1/monitors/{monitorID}", handler.delete)
+
+	router.Handle("/static/*", web.static())
+	router.Get("/", web.dashboard)
+	router.Get("/monitors/new", web.newMonitor)
+	router.Post("/monitors", web.createMonitor)
+	router.Get("/monitors/{monitorID}", web.monitorDetails)
+	router.Post("/monitors/{monitorID}/toggle", web.toggleMonitor)
+	router.Post("/monitors/{monitorID}/delete", web.deleteMonitor)
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "route not found", nil)

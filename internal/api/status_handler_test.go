@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Olzerq/Pulse/internal/event"
 	"github.com/Olzerq/Pulse/internal/monitor"
 	"github.com/Olzerq/Pulse/internal/monitorstate"
 	"github.com/Olzerq/Pulse/internal/observability"
@@ -102,7 +103,7 @@ func requestStatus(t *testing.T, monitors monitorStore, states stateStore) *http
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	metrics := observability.NewMetrics("test")
 	probes := observability.NewHandler(metrics, nil, time.Second)
-	router := newRouter(logger, monitors, states, metrics, probes)
+	router := newRouter(logger, monitors, states, &fakeHistoryStore{}, metrics, probes)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/monitors/"+testMonitorID+"/status", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -110,37 +111,75 @@ func requestStatus(t *testing.T, monitors monitorStore, states stateStore) *http
 }
 
 type fakeMonitorStore struct {
-	item   monitor.Monitor
-	getErr error
+	item      monitor.Monitor
+	items     []monitor.Monitor
+	created   monitor.Monitor
+	updated   monitor.Monitor
+	deletedID string
+	getErr    error
 }
 
 func (s *fakeMonitorStore) List(context.Context) ([]monitor.Monitor, error) {
-	return nil, nil
+	return s.items, nil
 }
 
-func (s *fakeMonitorStore) Get(context.Context, string) (monitor.Monitor, error) {
-	return s.item, s.getErr
+func (s *fakeMonitorStore) Get(_ context.Context, id string) (monitor.Monitor, error) {
+	if s.getErr != nil {
+		return monitor.Monitor{}, s.getErr
+	}
+	if s.item.ID != "" {
+		return s.item, nil
+	}
+	for _, item := range s.items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return monitor.Monitor{}, monitor.ErrNotFound
 }
 
 func (s *fakeMonitorStore) Create(_ context.Context, item monitor.Monitor) (monitor.Monitor, error) {
+	if item.ID == "" {
+		item.ID = testMonitorID
+	}
+	s.created = item
 	return item, nil
 }
 
 func (s *fakeMonitorStore) Update(_ context.Context, item monitor.Monitor) (monitor.Monitor, error) {
+	s.updated = item
 	return item, nil
 }
 
-func (s *fakeMonitorStore) Delete(context.Context, string) error {
+func (s *fakeMonitorStore) Delete(_ context.Context, id string) error {
+	s.deletedID = id
 	return nil
 }
 
 type fakeStateStore struct {
-	state monitorstate.State
-	err   error
-	calls int
+	state  monitorstate.State
+	states map[string]monitorstate.State
+	err    error
+	calls  int
 }
 
-func (s *fakeStateStore) Get(context.Context, string) (monitorstate.State, error) {
+type fakeHistoryStore struct {
+	checks    []event.CheckResult
+	err       error
+	monitorID string
+	limit     int
+}
+
+func (s *fakeHistoryStore) ListRecent(_ context.Context, monitorID string, limit int) ([]event.CheckResult, error) {
+	s.monitorID = monitorID
+	s.limit = limit
+	return s.checks, s.err
+}
+
+func (s *fakeStateStore) Get(_ context.Context, id string) (monitorstate.State, error) {
 	s.calls++
+	if state, ok := s.states[id]; ok {
+		return state, s.err
+	}
 	return s.state, s.err
 }

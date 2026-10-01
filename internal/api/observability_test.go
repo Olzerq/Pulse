@@ -21,6 +21,7 @@ func TestObservabilityRoutes(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeMonitorStore{},
 		&fakeStateStore{},
+		&fakeHistoryStore{},
 		metrics,
 		probes,
 	)
@@ -44,6 +45,7 @@ func TestHTTPMetricsUseRoutePattern(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeMonitorStore{},
 		&fakeStateStore{},
+		&fakeHistoryStore{},
 		metrics,
 		probes,
 	)

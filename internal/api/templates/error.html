@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Code}} | Pulse</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Pulse, главная">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Pulse</span>
+    </a>
+  </header>
+  <main class="page page-narrow">
+    <section class="empty-state error-state">
+      <p class="error-code">{{.Code}}</p>
+      <h1>{{.Title}}</h1>
+      <p>{{.Message}}</p>
+      <a class="button button-primary" href="/">На главную</a>
+    </section>
+  </main>
+</body>
+</html>

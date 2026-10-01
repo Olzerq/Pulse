@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="30">
+  <title>Pulse | Мониторинг</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Pulse, главная">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Pulse</span>
+    </a>
+    <a class="button button-primary" href="/monitors/new">Добавить monitor</a>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Состояние системы</p>
+        <h1>Все сервисы под наблюдением</h1>
+        <p class="lead">Страница обновляется каждые 30 секунд.</p>
+      </div>
+      <div class="summary" aria-label="Сводка по monitors">
+        <div class="summary-item"><strong>{{.Total}}</strong><span>Всего</span></div>
+        <div class="summary-item summary-up"><strong>{{.Up}}</strong><span>Работают</span></div>
+        <div class="summary-item summary-down"><strong>{{.Down}}</strong><span>Недоступны</span></div>
+        <div class="summary-item"><strong>{{.Unknown}}</strong><span>Без данных</span></div>
+      </div>
+    </section>
+
+    {{if .Monitors}}
+    <section class="monitor-grid" aria-label="Список monitors">
+      {{range .Monitors}}
+      <a class="monitor-card" href="/monitors/{{.Monitor.ID}}">
+        <div class="monitor-card-head">
+          <div class="monitor-title">
+            <span class="status-dot {{statusClass .State.Status}}" aria-hidden="true"></span>
+            <div>
+              <h2>{{.Monitor.Name}}</h2>
+              <p>{{.Monitor.URL}}</p>
+            </div>
+          </div>
+          <span class="status-badge {{statusClass .State.Status}}">{{statusText .State.Status}}</span>
+        </div>
+        <dl class="monitor-meta">
+          <div><dt>Задержка</dt><dd>{{formatLatency .State.LatencyMS}}</dd></div>
+          <div><dt>Последняя проверка</dt><dd>{{formatTime .State.CheckedAt}}</dd></div>
+          <div><dt>Интервал</dt><dd>{{.Monitor.IntervalSeconds}} сек.</dd></div>
+        </dl>
+        {{if not .Monitor.Enabled}}<span class="paused-label">Проверки приостановлены</span>{{end}}
+      </a>
+      {{end}}
+    </section>
+    {{else}}
+    <section class="empty-state">
+      <div class="empty-icon" aria-hidden="true">+</div>
+      <h2>Пока нет ни одного monitor</h2>
+      <p>Добавьте первый URL, и Pulse начнёт проверять его доступность.</p>
+      <a class="button button-primary" href="/monitors/new">Добавить первый monitor</a>
+    </section>
+    {{end}}
+  </main>
+</body>
+</html>

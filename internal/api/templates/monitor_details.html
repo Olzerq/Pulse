@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="30">
+  <title>{{.Monitor.Name}} | Pulse</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Pulse, главная">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Pulse</span>
+    </a>
+    <a class="text-link" href="/">← Все monitors</a>
+  </header>
+
+  <main class="page">
+    <section class="detail-head">
+      <div>
+        <div class="title-row">
+          <span class="status-dot status-dot-large {{statusClass .State.Status}}" aria-hidden="true"></span>
+          <h1>{{.Monitor.Name}}</h1>
+          <span class="status-badge {{statusClass .State.Status}}">{{statusText .State.Status}}</span>
+        </div>
+        <a class="monitor-url" href="{{.Monitor.URL}}" target="_blank" rel="noreferrer">{{.Monitor.URL}}</a>
+      </div>
+      <div class="actions">
+        <form method="post" action="/monitors/{{.Monitor.ID}}/toggle">
+          <button class="button button-secondary" type="submit">{{if .Monitor.Enabled}}Приостановить{{else}}Возобновить{{end}}</button>
+        </form>
+        <form method="post" action="/monitors/{{.Monitor.ID}}/delete" onsubmit="return confirm('Удалить этот monitor? История проверок останется в PostgreSQL.');">
+          <button class="button button-danger" type="submit">Удалить</button>
+        </form>
+      </div>
+    </section>
+
+    {{if not .Monitor.Enabled}}
+    <div class="notice">Проверки приостановлены. Последний известный статус сохранён.</div>
+    {{end}}
+
+    <section class="detail-grid">
+      <article class="panel status-panel">
+        <p class="panel-label">Текущее состояние</p>
+        <strong class="big-status {{statusClass .State.Status}}">{{statusText .State.Status}}</strong>
+        <dl class="facts">
+          <div><dt>Задержка</dt><dd>{{formatLatency .State.LatencyMS}}</dd></div>
+          <div><dt>Последняя проверка</dt><dd>{{formatTime .State.CheckedAt}}</dd></div>
+          <div><dt>Последнее изменение</dt><dd>{{formatTime .State.LastStatusChangeAt}}</dd></div>
+          <div><dt>HTTP-код</dt><dd>{{if .State.StatusCode}}{{.State.StatusCode}}{{else}}Нет данных{{end}}</dd></div>
+        </dl>
+        {{if .State.Error}}<p class="error-message">{{.State.Error}}</p>{{end}}
+      </article>
+
+      <article class="panel">
+        <p class="panel-label">Настройки проверки</p>
+        <dl class="facts">
+          <div><dt>Метод</dt><dd>{{.Monitor.Method}}</dd></div>
+          <div><dt>Ожидаемый код</dt><dd>{{.Monitor.ExpectedStatusCode}}</dd></div>
+          <div><dt>Интервал</dt><dd>{{.Monitor.IntervalSeconds}} сек.</dd></div>
+          <div><dt>Timeout</dt><dd>{{.Monitor.TimeoutMS}} мс</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="panel history-panel">
+      <div class="section-head">
+        <div>
+          <p class="panel-label">История</p>
+          <h2>Последние проверки</h2>
+        </div>
+        <span class="muted">До 50 результатов</span>
+      </div>
+      {{if .Checks}}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Результат</th><th>Время</th><th>HTTP-код</th><th>Задержка</th><th>Причина</th></tr></thead>
+          <tbody>
+          {{range .Checks}}
+            <tr>
+              <td><span class="status-badge {{checkClass .}}">{{checkStatus .}}</span></td>
+              <td>{{formatCheckTime .CheckedAt}}</td>
+              <td>{{checkCode .}}</td>
+              <td>{{.LatencyMS}} мс</td>
+              <td class="history-error">{{checkError .}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <div class="inline-empty">История появится после первой проверки.</div>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>

@@ -37,13 +37,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	logger.InfoContext(ctx, "connected to Redis")
 
 	store := postgres.NewMonitorStore(pool)
+	historyStore := postgres.NewCheckStore(pool)
 	stateStore := pulseredis.NewStateStore(redisClient)
 	metrics := observability.NewMetrics(cfg.Service)
 	observabilityHandler := observability.NewHandler(metrics, map[string]observability.Check{
 		"postgres": pool.Ping,
 		"redis":    redisClient.Ping,
 	}, cfg.HealthCheckTimeout)
-	router := newRouter(logger, store, stateStore, metrics, observabilityHandler)
+	router := newRouter(logger, store, stateStore, historyStore, metrics, observabilityHandler)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

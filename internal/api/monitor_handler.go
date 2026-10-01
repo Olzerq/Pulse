@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strconv"
 
+	"github.com/Olzerq/Pulse/internal/event"
 	"github.com/Olzerq/Pulse/internal/monitor"
 	"github.com/Olzerq/Pulse/internal/monitorstate"
 	"github.com/go-chi/chi/v5"
@@ -33,14 +35,19 @@ type stateStore interface {
 	Get(context.Context, string) (monitorstate.State, error)
 }
 
-type monitorHandler struct {
-	logger *slog.Logger
-	store  monitorStore
-	states stateStore
+type historyStore interface {
+	ListRecent(context.Context, string, int) ([]event.CheckResult, error)
 }
 
-func newMonitorHandler(logger *slog.Logger, store monitorStore, states stateStore) *monitorHandler {
-	return &monitorHandler{logger: logger, store: store, states: states}
+type monitorHandler struct {
+	logger  *slog.Logger
+	store   monitorStore
+	states  stateStore
+	history historyStore
+}
+
+func newMonitorHandler(logger *slog.Logger, store monitorStore, states stateStore, history historyStore) *monitorHandler {
+	return &monitorHandler{logger: logger, store: store, states: states, history: history}
 }
 
 func (h *monitorHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +91,33 @@ func (h *monitorHandler) getStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"state": state})
+}
+
+func (h *monitorHandler) getChecks(w http.ResponseWriter, r *http.Request) {
+	id, ok := monitorID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.Get(r.Context(), id); h.handleStoreError(w, r, "get monitor for history", err) {
+		return
+	}
+
+	limit := 50
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be an integer between 1 and 200", nil)
+			return
+		}
+		limit = parsed
+	}
+
+	checks, err := h.history.ListRecent(r.Context(), id, limit)
+	if err != nil {
+		h.internalError(w, r, "list monitor checks", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"checks": checks})
 }
 
 func (h *monitorHandler) create(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Новый monitor | Pulse</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Pulse, главная">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Pulse</span>
+    </a>
+    <a class="text-link" href="/">← Отмена</a>
+  </header>
+
+  <main class="page page-narrow">
+    <section class="form-intro">
+      <p class="eyebrow">Новая проверка</p>
+      <h1>Добавить monitor</h1>
+      <p class="lead">Pulse будет открывать адрес по расписанию и сообщит, если сервис перестанет отвечать.</p>
+    </section>
+
+    <form class="panel monitor-form" method="post" action="/monitors" novalidate>
+      <div class="field field-wide">
+        <label for="name">Название</label>
+        <input id="name" name="name" type="text" maxlength="200" value="{{.Values.Name}}" placeholder="Например, основной сайт" autofocus>
+        {{with index .Errors "name"}}<p class="field-error">{{.}}</p>{{end}}
+      </div>
+
+      <div class="field field-wide">
+        <label for="url">URL</label>
+        <input id="url" name="url" type="url" maxlength="2048" value="{{.Values.URL}}" placeholder="https://example.com/health">
+        {{with index .Errors "url"}}<p class="field-error">{{.}}</p>{{end}}
+      </div>
+
+      <div class="field">
+        <label for="method">HTTP-метод</label>
+        <select id="method" name="method">
+          <option value="GET" {{if eq .Values.Method "GET"}}selected{{end}}>GET</option>
+          <option value="HEAD" {{if eq .Values.Method "HEAD"}}selected{{end}}>HEAD</option>
+        </select>
+        {{with index .Errors "method"}}<p class="field-error">{{.}}</p>{{end}}
+      </div>
+
+      <div class="field">
+        <label for="expected_status_code">Ожидаемый HTTP-код</label>
+        <input id="expected_status_code" name="expected_status_code" type="number" min="100" max="599" value="{{.Values.ExpectedStatusCode}}">
+        {{with index .Errors "expected_status_code"}}<p class="field-error">{{.}}</p>{{end}}
+      </div>
+
+      <div class="field">
+        <label for="interval_seconds">Интервал, секунды</label>
+        <input id="interval_seconds" name="interval_seconds" type="number" min="5" max="86400" value="{{.Values.IntervalSeconds}}">
+        {{with index .Errors "interval_seconds"}}<p class="field-error">{{.}}</p>{{end}}
+      </div>
+
+      <div class="field">
+        <label for="timeout_ms">Timeout, миллисекунды</label>
+        <input id="timeout_ms" name="timeout_ms" type="number" min="100" max="60000" value="{{.Values.TimeoutMS}}">
+        {{with index .Errors "timeout_ms"}}<p class="field-error">{{.}}</p>{{end}}
+      </div>
+
+      <label class="checkbox field-wide">
+        <input name="enabled" type="checkbox" {{if .Values.Enabled}}checked{{end}}>
+        <span><strong>Начать проверять сразу</strong><small>Monitor можно приостановить в любой момент.</small></span>
+      </label>
+
+      <div class="form-actions field-wide">
+        <a class="button button-secondary" href="/">Отмена</a>
+        <button class="button button-primary" type="submit">Создать monitor</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>
