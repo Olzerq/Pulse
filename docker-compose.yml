@@ -4,6 +4,8 @@ x-app-environment: &app-environment
   PULSE_ENV: ${PULSE_ENV:-development}
   PULSE_LOG_LEVEL: ${PULSE_LOG_LEVEL:-info}
   PULSE_SHUTDOWN_TIMEOUT: ${PULSE_SHUTDOWN_TIMEOUT:-10s}
+  PULSE_OBSERVABILITY_ADDR: ${PULSE_OBSERVABILITY_ADDR:-:9090}
+  PULSE_HEALTH_CHECK_TIMEOUT: ${PULSE_HEALTH_CHECK_TIMEOUT:-2s}
   PULSE_POSTGRES_URL: postgres://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
   PULSE_REDIS_ADDR: redis:6379
   PULSE_REDIS_OPERATION_TIMEOUT: ${PULSE_REDIS_OPERATION_TIMEOUT:-2s}
@@ -74,6 +76,12 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:9090/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     stop_grace_period: 15s
 
   consumer:
@@ -96,7 +104,30 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:9090/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     stop_grace_period: 15s
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      api:
+        condition: service_healthy
+      consumer:
+        condition: service_healthy
 
   migrate:
     build:
@@ -198,3 +229,4 @@ volumes:
   postgres_data:
   redis_data:
   kafka_data:
+  prometheus_data:

@@ -16,7 +16,9 @@ const (
 	defaultEnvironment            = "development"
 	defaultLogLevel               = "info"
 	defaultHTTPAddr               = ":8080"
+	defaultObservabilityAddr      = ":9090"
 	defaultShutdownTimeout        = 10 * time.Second
+	defaultHealthCheckTimeout     = 2 * time.Second
 	defaultPostgresURL            = "postgres://pulse:pulse@localhost:5432/pulse?sslmode=disable"
 	defaultRedisAddr              = "localhost:6379"
 	defaultRedisOperationTimeout  = 2 * time.Second
@@ -40,7 +42,9 @@ type Config struct {
 	Environment            string
 	LogLevel               string
 	HTTPAddr               string
+	ObservabilityAddr      string
 	ShutdownTimeout        time.Duration
+	HealthCheckTimeout     time.Duration
 	PostgresURL            string
 	RedisAddr              string
 	RedisOperationTimeout  time.Duration
@@ -63,6 +67,10 @@ type Config struct {
 // defaults. Environment variable names deliberately use a PULSE_ prefix.
 func Load(service string) (Config, error) {
 	shutdownTimeout, err := durationFromEnv("PULSE_SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	healthCheckTimeout, err := durationFromEnv("PULSE_HEALTH_CHECK_TIMEOUT", defaultHealthCheckTimeout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -103,7 +111,9 @@ func Load(service string) (Config, error) {
 		Environment:            envOrDefault("PULSE_ENV", defaultEnvironment),
 		LogLevel:               strings.ToLower(envOrDefault("PULSE_LOG_LEVEL", defaultLogLevel)),
 		HTTPAddr:               envOrDefault("PULSE_HTTP_ADDR", defaultHTTPAddr),
+		ObservabilityAddr:      envOrDefault("PULSE_OBSERVABILITY_ADDR", defaultObservabilityAddr),
 		ShutdownTimeout:        shutdownTimeout,
+		HealthCheckTimeout:     healthCheckTimeout,
 		PostgresURL:            envOrDefault("PULSE_POSTGRES_URL", defaultPostgresURL),
 		RedisAddr:              envOrDefault("PULSE_REDIS_ADDR", defaultRedisAddr),
 		RedisOperationTimeout:  redisOperationTimeout,
@@ -143,8 +153,14 @@ func (c Config) Validate() error {
 	if c.HTTPAddr == "" {
 		errs = append(errs, errors.New("PULSE_HTTP_ADDR is required"))
 	}
+	if c.ObservabilityAddr == "" {
+		errs = append(errs, errors.New("PULSE_OBSERVABILITY_ADDR is required"))
+	}
 	if c.ShutdownTimeout <= 0 {
 		errs = append(errs, errors.New("PULSE_SHUTDOWN_TIMEOUT must be greater than zero"))
+	}
+	if c.HealthCheckTimeout <= 0 {
+		errs = append(errs, errors.New("PULSE_HEALTH_CHECK_TIMEOUT must be greater than zero"))
 	}
 	if c.PostgresURL == "" {
 		errs = append(errs, errors.New("PULSE_POSTGRES_URL is required"))

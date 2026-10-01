@@ -85,6 +85,21 @@ func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	return value, nil
 }
 
+func (c *Client) MGet(ctx context.Context, keys ...string) ([]any, error) {
+	values, err := c.inner.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("get multiple Redis keys: %w", err)
+	}
+	return values, nil
+}
+
+func (c *Client) Ping(ctx context.Context) error {
+	if err := c.inner.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("ping Redis: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) Close() error {
 	return c.inner.Close()
 }

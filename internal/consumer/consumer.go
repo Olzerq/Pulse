@@ -17,6 +17,7 @@ import (
 	pulsekafka "github.com/Olzerq/Pulse/internal/kafka"
 	"github.com/Olzerq/Pulse/internal/monitorstate"
 	"github.com/Olzerq/Pulse/internal/notification"
+	"github.com/Olzerq/Pulse/internal/observability"
 	"github.com/Olzerq/Pulse/internal/postgres"
 	pulseredis "github.com/Olzerq/Pulse/internal/redis"
 )
@@ -55,6 +56,7 @@ type Service struct {
 	notificationsOn  bool
 	logger           *slog.Logger
 	operationTimeout time.Duration
+	metrics          *observability.Metrics
 }
 
 func NewService(
@@ -66,7 +68,12 @@ func NewService(
 	notificationsOn bool,
 	logger *slog.Logger,
 	operationTimeout time.Duration,
+	metrics ...*observability.Metrics,
 ) *Service {
+	var serviceMetrics *observability.Metrics
+	if len(metrics) > 0 {
+		serviceMetrics = metrics[0]
+	}
 	return &Service{
 		reader:           reader,
 		history:          history,
@@ -76,6 +83,7 @@ func NewService(
 		notificationsOn:  notificationsOn,
 		logger:           logger,
 		operationTimeout: operationTimeout,
+		metrics:          serviceMetrics,
 	}
 }
 
@@ -119,6 +127,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		logger.InfoContext(ctx, "Telegram notifications disabled")
 	}
 
+	metrics := observability.NewMetrics(cfg.Service)
 	service := NewService(
 		reader,
 		postgres.NewCheckStore(pool),
@@ -128,6 +137,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		cfg.TelegramEnabled(),
 		logger,
 		cfg.ConsumerProcessTimeout,
+		metrics,
 	)
 	logger.InfoContext(ctx, "consumer ready",
 		"kafka_broker_count", len(cfg.KafkaBrokers),
@@ -137,7 +147,26 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		"redis_operation_timeout", cfg.RedisOperationTimeout,
 		"telegram_notifications", cfg.TelegramEnabled(),
 	)
-	return service.Run(ctx)
+	healthHandler := observability.NewHandler(metrics, map[string]observability.Check{
+		"postgres": pool.Ping,
+		"redis":    redisClient.Ping,
+		"kafka": func(checkCtx context.Context) error {
+			return pulsekafka.Ping(checkCtx, cfg.KafkaBrokers)
+		},
+	}, cfg.HealthCheckTimeout)
+	return observability.RunTogether(
+		ctx,
+		service.Run,
+		func(serverCtx context.Context) error {
+			return observability.Serve(
+				serverCtx,
+				cfg.ObservabilityAddr,
+				cfg.ShutdownTimeout,
+				healthHandler,
+				logger,
+			)
+		},
+	)
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -155,11 +184,17 @@ func (s *Service) Run(ctx context.Context) error {
 func (s *Service) consumeOne(ctx context.Context) error {
 	message, err := s.reader.FetchMessage(ctx)
 	if err != nil {
+		if s.metrics != nil && ctx.Err() == nil {
+			s.metrics.ObserveKafka("consumed", "error")
+		}
 		return fmt.Errorf("fetch Kafka message: %w", err)
 	}
 
 	result, state, inserted, transition, err := s.storeMessage(ctx, message)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.ObserveKafka("consumed", "error")
+		}
 		return fmt.Errorf(
 			"process Kafka message topic=%s partition=%d offset=%d: %w",
 			message.Topic,
@@ -173,6 +208,9 @@ func (s *Service) consumeOne(ctx context.Context) error {
 	err = s.reader.CommitMessages(commitCtx, message)
 	cancel()
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.ObserveKafka("consumed", "error")
+		}
 		return fmt.Errorf(
 			"commit Kafka message topic=%s partition=%d offset=%d: %w",
 			message.Topic,
@@ -180,6 +218,13 @@ func (s *Service) consumeOne(ctx context.Context) error {
 			message.Offset,
 			err,
 		)
+	}
+	if s.metrics != nil {
+		result := "processed"
+		if !inserted {
+			result = "duplicate"
+		}
+		s.metrics.ObserveKafka("consumed", result)
 	}
 
 	attributes := []any{
@@ -274,11 +319,20 @@ func (s *Service) processTransition(ctx context.Context, transition monitorstate
 		err = s.transitions.MarkSkipped(operationCtx, transition.EventID)
 		cancel()
 		if err != nil {
+			if s.metrics != nil {
+				s.metrics.ObserveNotification("telegram", "error")
+			}
 			return fmt.Errorf("mark Telegram notification skipped: %w", err)
+		}
+		if s.metrics != nil {
+			s.metrics.ObserveNotification("telegram", "skipped")
 		}
 		return nil
 	}
 	if s.sender == nil {
+		if s.metrics != nil {
+			s.metrics.ObserveNotification("telegram", "error")
+		}
 		return errors.New("Telegram notifications are enabled without a sender")
 	}
 
@@ -290,7 +344,13 @@ func (s *Service) processTransition(ctx context.Context, transition monitorstate
 		recordErr := s.transitions.RecordFailure(failureCtx, transition.EventID, sendErr.Error())
 		failureCancel()
 		if recordErr != nil {
+			if s.metrics != nil {
+				s.metrics.ObserveNotification("telegram", "error")
+			}
 			return errors.Join(fmt.Errorf("send Telegram notification: %w", sendErr), recordErr)
+		}
+		if s.metrics != nil {
+			s.metrics.ObserveNotification("telegram", "error")
 		}
 		return fmt.Errorf("send Telegram notification: %w", sendErr)
 	}
@@ -299,7 +359,13 @@ func (s *Service) processTransition(ctx context.Context, transition monitorstate
 	err = s.transitions.MarkSent(operationCtx, transition.EventID, messageID)
 	cancel()
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.ObserveNotification("telegram", "error")
+		}
 		return err
+	}
+	if s.metrics != nil {
+		s.metrics.ObserveNotification("telegram", "sent")
 	}
 	return nil
 }

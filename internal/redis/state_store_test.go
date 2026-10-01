@@ -80,6 +80,46 @@ func TestStateStoreReadsStageSixValue(t *testing.T) {
 	}
 }
 
+func TestStateStoreCountsRequestedDownMonitors(t *testing.T) {
+	t.Parallel()
+
+	checkedAt := time.Now().UTC()
+	downError := "connection refused"
+	client := &fakeKeyValueClient{values: make(map[string]string)}
+	store := NewStateStore(client)
+	latency := int64(10)
+	for _, state := range []monitorstate.State{
+		{
+			MonitorID: "up", Status: monitorstate.StatusUp, CheckedAt: &checkedAt,
+			LastStatusChangeAt: &checkedAt, StatusCode: intPointer(200), LatencyMS: &latency,
+		},
+		{
+			MonitorID: "down", Status: monitorstate.StatusDown, CheckedAt: &checkedAt,
+			LastStatusChangeAt: &checkedAt, LatencyMS: &latency, Error: &downError,
+		},
+	} {
+		if err := store.Set(context.Background(), state); err != nil {
+			t.Fatalf("Set() error = %v", err)
+		}
+	}
+
+	count, err := store.CountByStatus(
+		context.Background(),
+		[]string{"up", "down", "unknown"},
+		monitorstate.StatusDown,
+	)
+	if err != nil {
+		t.Fatalf("CountByStatus() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountByStatus() = %d, want 1", count)
+	}
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
 type fakeKeyValueClient struct {
 	values map[string]string
 	getErr error
@@ -106,4 +146,17 @@ func (c *fakeKeyValueClient) Get(_ context.Context, key string) (string, error) 
 		return "", errKeyNotFound
 	}
 	return value, nil
+}
+
+func (c *fakeKeyValueClient) MGet(_ context.Context, keys ...string) ([]any, error) {
+	if c.getErr != nil {
+		return nil, c.getErr
+	}
+	values := make([]any, len(keys))
+	for index, key := range keys {
+		if value, ok := c.values[key]; ok {
+			values[index] = value
+		}
+	}
+	return values, nil
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/Olzerq/Pulse/internal/check"
 	"github.com/Olzerq/Pulse/internal/config"
 	pulsekafka "github.com/Olzerq/Pulse/internal/kafka"
+	"github.com/Olzerq/Pulse/internal/observability"
 	"github.com/Olzerq/Pulse/internal/postgres"
 	pulseredis "github.com/Olzerq/Pulse/internal/redis"
 	"github.com/google/uuid"
@@ -46,6 +47,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}()
 
 	store := postgres.NewMonitorStore(pool)
+	stateStore := pulseredis.NewStateStore(redisClient)
+	metrics := observability.NewMetrics(cfg.Service)
 	instanceID := newInstanceID()
 	scheduler := NewScheduler(
 		store,
@@ -60,6 +63,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			LockGrace:            cfg.PingerLockGrace,
 			PublishTimeout:       cfg.KafkaPublishTimeout,
 			LockOperationTimeout: cfg.RedisOperationTimeout,
+			StateCounter:         stateStore,
+			Metrics:              metrics,
 		},
 	)
 
@@ -72,7 +77,26 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		"topic", cfg.CheckResultTopic,
 		"publish_timeout", cfg.KafkaPublishTimeout,
 	)
-	return scheduler.Run(ctx)
+	healthHandler := observability.NewHandler(metrics, map[string]observability.Check{
+		"postgres": pool.Ping,
+		"redis":    redisClient.Ping,
+		"kafka": func(checkCtx context.Context) error {
+			return pulsekafka.Ping(checkCtx, cfg.KafkaBrokers)
+		},
+	}, cfg.HealthCheckTimeout)
+	return observability.RunTogether(
+		ctx,
+		scheduler.Run,
+		func(serverCtx context.Context) error {
+			return observability.Serve(
+				serverCtx,
+				cfg.ObservabilityAddr,
+				cfg.ShutdownTimeout,
+				healthHandler,
+				logger,
+			)
+		},
+	)
 }
 
 func newInstanceID() string {

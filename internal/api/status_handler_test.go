@@ -13,6 +13,7 @@ import (
 
 	"github.com/Olzerq/Pulse/internal/monitor"
 	"github.com/Olzerq/Pulse/internal/monitorstate"
+	"github.com/Olzerq/Pulse/internal/observability"
 )
 
 const testMonitorID = "9606cfdf-8eaf-4e9c-bd17-16e3e2b63748"
@@ -99,7 +100,9 @@ func requestStatus(t *testing.T, monitors monitorStore, states stateStore) *http
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := newRouter(logger, monitors, states)
+	metrics := observability.NewMetrics("test")
+	probes := observability.NewHandler(metrics, nil, time.Second)
+	router := newRouter(logger, monitors, states, metrics, probes)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/monitors/"+testMonitorID+"/status", nil)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)

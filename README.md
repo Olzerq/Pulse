@@ -74,6 +74,8 @@ Monitor
 - защита от обычной повторной отправки alert по тому же `event_id`
 - несколько экземпляров Pinger в Docker Compose
 - Redis locks с TTL для защиты от одновременной проверки одного monitor
+- Prometheus metrics без high-cardinality labels
+- endpoints `/metrics`, `/healthz`, `/livez` и `/readyz`
 - конфигурация через переменные окружения
 - проверка конфигурации при запуске
 - структурированные JSON-логи через `log/slog`
@@ -94,9 +96,9 @@ Monitor
 - Docker и Docker Compose
 
 Для работы с Redis используется `go-redis`, для Kafka используется `kafka-go`,
-а Telegram Bot API вызывается стандартным HTTP-клиентом Go. Redis также
-координирует несколько экземпляров Pinger. На следующих этапах появятся
-Prometheus metrics и web UI.
+а Telegram Bot API вызывается стандартным HTTP-клиентом Go. Redis координирует
+несколько экземпляров Pinger, а Prometheus собирает технические metrics. На
+следующем этапе появится минимальный web UI.
 
 ## Быстрый запуск
 
@@ -116,6 +118,12 @@ Compose соберёт Go-приложения, запустит инфраст�
 
 ```text
 http://localhost:8080
+```
+
+Prometheus будет доступен по адресу:
+
+```text
+http://localhost:9091
 ```
 
 Проверить его можно командой:
@@ -437,6 +445,57 @@ docker compose exec postgres psql -U pulse -d pulse -c \
   "SELECT event_id, monitor_id, previous_status, new_status, changed_at, notification_status FROM status_transitions ORDER BY changed_at DESC LIMIT 20;"
 ```
 
+## Observability
+
+API публикует служебные endpoints на основном HTTP-порту:
+
+```text
+GET /metrics
+GET /healthz
+GET /livez
+GET /readyz
+```
+
+Pinger и Consumer публикуют те же endpoints на внутреннем порту `9090` своих
+контейнеров. `/livez` проверяет, что процесс отвечает. `/readyz` и `/healthz`
+проверяют используемые сервисом PostgreSQL, Redis и Kafka. Docker healthchecks
+используют `/readyz`.
+
+Основные metrics:
+
+- `pulse_checks_total`
+- `pulse_check_duration_seconds`
+- `pulse_check_errors_total`
+- `pulse_monitors_total`
+- `pulse_monitors_down`
+- `pulse_kafka_events_total`
+- `pulse_notifications_total`
+- `pulse_lock_attempts_total`
+- `pulse_http_requests_total`
+- `pulse_http_request_duration_seconds`
+
+Labels ограничены небольшими наборами значений, например `service`, `result`,
+`kind`, `direction` и шаблон HTTP route. `monitor_id`, URL и другие значения с
+высокой cardinality в labels не используются.
+
+Prometheus автоматически находит оба экземпляра Pinger через Docker DNS.
+Посмотреть состояние targets можно на странице:
+
+```text
+http://localhost:9091/targets
+```
+
+Примеры PromQL:
+
+```promql
+sum(rate(pulse_checks_total[5m])) by (result)
+max(pulse_monitors_down)
+sum(rate(pulse_kafka_events_total[5m])) by (direction, result)
+```
+
+HTTP-запросы API записываются в структурированный лог с request ID, route,
+status, размером ответа и duration. Secrets в логи и metrics не попадают.
+
 ## Локальный запуск Go-сервисов
 
 Каждое приложение можно запустить отдельно:
@@ -461,7 +520,9 @@ Compose с опубликованными локальными портами.
 | `PULSE_ENV` | `development` | Название окружения в логах |
 | `PULSE_LOG_LEVEL` | `info` | Уровень логирования |
 | `PULSE_HTTP_ADDR` | `:8080` | Адрес API |
+| `PULSE_OBSERVABILITY_ADDR` | `:9090` | Адрес metrics и probes у worker-сервисов |
 | `PULSE_SHUTDOWN_TIMEOUT` | `10s` | Время на корректную остановку HTTP-сервера |
+| `PULSE_HEALTH_CHECK_TIMEOUT` | `2s` | Timeout одной проверки зависимости в `/readyz` |
 | `PULSE_POSTGRES_URL` | локальный DSN | Подключение к PostgreSQL |
 | `PULSE_REDIS_ADDR` | `localhost:6379` | Адрес Redis |
 | `PULSE_REDIS_OPERATION_TIMEOUT` | `2s` | Timeout подключения и операций Redis |
@@ -475,6 +536,7 @@ Compose с опубликованными локальными портами.
 | `PULSE_PINGER_USER_AGENT` | `Pulse/0.1` | User-Agent исходящих запросов |
 | `PULSE_PINGER_LOCK_GRACE` | `5s` | Запас времени для TTL Redis lock |
 | `PULSE_PINGER_REPLICAS` | `2` | Число Pinger в Docker Compose |
+| `PROMETHEUS_PORT` | `9091` | Локальный порт Prometheus в Docker Compose |
 | `PULSE_TELEGRAM_BOT_TOKEN` | пусто | Токен Telegram bot, секрет |
 | `PULSE_TELEGRAM_CHAT_ID` | пусто | Chat ID для уведомлений |
 | `PULSE_TELEGRAM_API_URL` | `https://api.telegram.org` | Базовый URL Telegram Bot API |
@@ -506,12 +568,14 @@ internal/
   postgres/         пул соединений, monitor store и check history store
   redis/            клиент Redis, текущее состояние и distributed locks
   notification/     Telegram client и формат сообщений
+  observability/    Prometheus metrics и health endpoints
   migrate/          применение миграций
   pinger/           scheduler и worker pool
   consumer/         процесс Consumer
 
 docker/             общий Dockerfile для Go-сервисов
 migrations/         SQL-миграции и их встраивание в binary
+deploy/prometheus/  конфигурация Prometheus
 deploy/k8s/         будущие Kubernetes manifests
 docker-compose.yml  локальное окружение проекта
 ```
@@ -527,5 +591,8 @@ docker compose config --quiet
 
 ## Что дальше
 
-По roadmap остались observability, минимальный web UI, дополнительные тесты,
-Docker hardening и Kubernetes manifests.
+Следующий этап по roadmap: минимальный web UI со списком monitors, текущим
+status, latency и временем последней проверки.
+
+После UI останутся дополнительные integration tests, Docker hardening и
+Kubernetes manifests.

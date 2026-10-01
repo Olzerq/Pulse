@@ -12,6 +12,7 @@ import (
 type keyValueClient interface {
 	Set(context.Context, string, string) error
 	Get(context.Context, string) (string, error)
+	MGet(context.Context, ...string) ([]any, error)
 }
 
 type StateStore struct {
@@ -42,6 +43,51 @@ func (s *StateStore) Get(ctx context.Context, monitorID string) (monitorstate.St
 		return monitorstate.State{}, fmt.Errorf("load monitor state: %w", err)
 	}
 
+	return decodeState(value, monitorID)
+}
+
+// CountByStatus counts only the requested active monitors. MGET keeps the
+// Prometheus refresh to one Redis round trip and ignores monitors with no state
+// because those are UNKNOWN, not DOWN.
+func (s *StateStore) CountByStatus(
+	ctx context.Context,
+	monitorIDs []string,
+	status monitorstate.Status,
+) (int, error) {
+	if len(monitorIDs) == 0 {
+		return 0, nil
+	}
+
+	keys := make([]string, len(monitorIDs))
+	for index, monitorID := range monitorIDs {
+		keys[index] = stateKey(monitorID)
+	}
+	values, err := s.client.MGet(ctx, keys...)
+	if err != nil {
+		return 0, fmt.Errorf("load monitor states: %w", err)
+	}
+
+	count := 0
+	for index, raw := range values {
+		if raw == nil {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return 0, fmt.Errorf("decode monitor state %q: Redis value is not a string", monitorIDs[index])
+		}
+		state, err := decodeState(value, monitorIDs[index])
+		if err != nil {
+			return 0, err
+		}
+		if state.Status == status {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func decodeState(value, monitorID string) (monitorstate.State, error) {
 	var state monitorstate.State
 	if err := json.Unmarshal([]byte(value), &state); err != nil {
 		return monitorstate.State{}, fmt.Errorf("decode monitor state: %w", err)

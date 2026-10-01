@@ -10,6 +10,8 @@ import (
 	"github.com/Olzerq/Pulse/internal/check"
 	"github.com/Olzerq/Pulse/internal/event"
 	"github.com/Olzerq/Pulse/internal/monitor"
+	"github.com/Olzerq/Pulse/internal/monitorstate"
+	"github.com/Olzerq/Pulse/internal/observability"
 )
 
 const monitorLoadTimeout = 5 * time.Second
@@ -31,6 +33,10 @@ type monitorLocker interface {
 	Complete(context.Context, string, string, time.Duration) (bool, error)
 }
 
+type stateCounter interface {
+	CountByStatus(context.Context, []string, monitorstate.Status) (int, error)
+}
+
 type SchedulerConfig struct {
 	InstanceID           string
 	PollInterval         time.Duration
@@ -38,6 +44,8 @@ type SchedulerConfig struct {
 	LockGrace            time.Duration
 	PublishTimeout       time.Duration
 	LockOperationTimeout time.Duration
+	StateCounter         stateCounter
+	Metrics              *observability.Metrics
 }
 
 // Scheduler loads active monitors, tracks their next run in memory, and sends
@@ -100,6 +108,27 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		if loadFailed {
 			s.logger.InfoContext(ctx, "active monitor loading recovered")
 			loadFailed = false
+		}
+		if s.config.Metrics != nil {
+			s.config.Metrics.SetMonitorsTotal(len(items))
+			if s.config.StateCounter != nil {
+				monitorIDs := make([]string, len(items))
+				for index, item := range items {
+					monitorIDs[index] = item.ID
+				}
+				metricsCtx, metricsCancel := context.WithTimeout(ctx, s.config.LockOperationTimeout)
+				down, countErr := s.config.StateCounter.CountByStatus(
+					metricsCtx,
+					monitorIDs,
+					monitorstate.StatusDown,
+				)
+				metricsCancel()
+				if countErr != nil {
+					s.logger.WarnContext(ctx, "count DOWN monitors for metrics", "error", countErr)
+				} else {
+					s.config.Metrics.SetMonitorsDown(down)
+				}
+			}
 		}
 
 		s.dispatchDue(now, items, schedule, inFlight, jobs)
@@ -197,6 +226,9 @@ func (s *Scheduler) runWorker(
 		acquired, err := s.locker.Acquire(lockCtx, item.ID, ownerID, lockTTL)
 		cancel()
 		if err != nil {
+			if s.config.Metrics != nil {
+				s.config.Metrics.ObserveLock("error")
+			}
 			s.logger.ErrorContext(ctx, "acquire monitor lock",
 				"instance_id", s.config.InstanceID,
 				"worker_id", workerID,
@@ -208,6 +240,9 @@ func (s *Scheduler) runWorker(
 			continue
 		}
 		if !acquired {
+			if s.config.Metrics != nil {
+				s.config.Metrics.ObserveLock("contended")
+			}
 			s.logger.DebugContext(ctx, "monitor check owned by another pinger",
 				"instance_id", s.config.InstanceID,
 				"worker_id", workerID,
@@ -216,13 +251,29 @@ func (s *Scheduler) runWorker(
 			s.complete(ctx, completed, item.ID, true)
 			continue
 		}
+		if s.config.Metrics != nil {
+			s.config.Metrics.ObserveLock("acquired")
+		}
 		acquiredAt := time.Now()
 
 		result := s.checker.Check(ctx, item)
+		if s.config.Metrics != nil {
+			s.config.Metrics.ObserveCheck(
+				result.Success,
+				string(result.ErrorKind),
+				time.Duration(result.LatencyMS)*time.Millisecond,
+			)
+		}
 		published, err := s.publisher.Publish(ctx, result)
 		if err != nil {
+			if s.config.Metrics != nil {
+				s.config.Metrics.ObserveKafka("published", "error")
+			}
 			s.logPublishError(ctx, workerID, published.EventID, result, err)
 		} else {
+			if s.config.Metrics != nil {
+				s.config.Metrics.ObserveKafka("published", "success")
+			}
 			s.logResult(workerID, published.EventID, result)
 		}
 

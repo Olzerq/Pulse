@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Olzerq/Pulse/internal/config"
+	"github.com/Olzerq/Pulse/internal/observability"
 	"github.com/Olzerq/Pulse/internal/postgres"
 	pulseredis "github.com/Olzerq/Pulse/internal/redis"
 )
@@ -37,7 +38,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	store := postgres.NewMonitorStore(pool)
 	stateStore := pulseredis.NewStateStore(redisClient)
-	router := newRouter(logger, store, stateStore)
+	metrics := observability.NewMetrics(cfg.Service)
+	observabilityHandler := observability.NewHandler(metrics, map[string]observability.Check{
+		"postgres": pool.Ping,
+		"redis":    redisClient.Ping,
+	}, cfg.HealthCheckTimeout)
+	router := newRouter(logger, store, stateStore, metrics, observabilityHandler)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
