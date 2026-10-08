@@ -7,7 +7,7 @@ backend-разработкой и event-driven архитектурой.
 Pulse регулярно проверяет заданные URL, сохраняет историю, показывает текущее
 состояние сервисов и отправляет уведомления при падении или восстановлении.
 
-Сейчас завершён двенадцатый этап разработки. Monitors можно создавать и управлять
+Сейчас реализованы все 13 этапов основного roadmap. Monitors можно создавать и управлять
 ими через web UI или HTTP API. Pinger проверяет активные URL по расписанию,
 отправляет результаты в Kafka, а Consumer сохраняет историю в PostgreSQL и
 актуальное состояние в Redis. При падении и восстановлении Pulse может
@@ -25,7 +25,7 @@ Pulse регулярно проверяет заданные URL, сохраня
 Отдельная утилита `migrate` применяет изменения схемы PostgreSQL перед запуском
 API и сразу завершает работу.
 
-Планируемый поток данных выглядит так:
+Поток данных выглядит так:
 
 ```text
 Monitor
@@ -92,6 +92,9 @@ Monitor
 - integration tests с настоящими PostgreSQL, Redis и Kafka
 - E2E-тест полного потока API, Pinger, Kafka, Consumer, PostgreSQL и Redis
 - read-only containers, сброшенные Linux capabilities и ограничение логов
+- Kubernetes Deployments, Services, ConfigMap и отдельный migration Job
+- Kubernetes probes, requests/limits и безопасные Pod templates
+- необязательный HPA для Pinger и изолированное локальное demo-окружение
 
 ## Стек
 
@@ -103,8 +106,8 @@ Monitor
 
 Для работы с Redis используется `go-redis`, для Kafka используется `kafka-go`,
 а Telegram Bot API вызывается стандартным HTTP-клиентом Go. Redis координирует
-несколько экземпляров Pinger, а Prometheus собирает технические metrics. На
-следующем этапе проект получит Kubernetes manifests.
+несколько экземпляров Pinger, а Prometheus собирает технические metrics.
+Проект можно запускать через Docker Compose или Kubernetes.
 
 ## Быстрый запуск
 
@@ -609,9 +612,10 @@ internal/
 docker/             Dockerfiles для сервисов и тестовых контейнеров
 migrations/         SQL-миграции и их встраивание в binary
 deploy/prometheus/  конфигурация Prometheus
-deploy/k8s/         будущие Kubernetes manifests
+deploy/k8s/         Kubernetes manifests и инструкция развёртывания
 tests/integration/  тесты PostgreSQL, Redis и Kafka
 tests/e2e/          проверка полного межсервисного потока
+tests/deployment/   проверки Kubernetes overlays без запуска кластера
 docker-compose.yml  локальное окружение проекта
 ```
 
@@ -669,8 +673,23 @@ docker compose --profile e2e run --build --rm e2e-tests
 API -> PostgreSQL -> Pinger -> Kafka -> Consumer -> PostgreSQL и Redis -> API
 ```
 
+## Kubernetes
+
+Манифесты находятся в `deploy/k8s`. Они запускают один API, два Pinger и один
+Consumer. Миграции применяются отдельным Job перед запуском приложений. Обычные
+настройки хранятся в ConfigMap, PostgreSQL DSN и Telegram credentials в Secret.
+У Pod настроены startup, liveness и readiness probes, requests/limits и
+ограничения безопасности. Для Pinger есть необязательный HPA.
+
+[Инструкция по запуску](deploy/k8s/README.md) описывает локальное demo в kind,
+подключение подготовленной инфраструктуры, registry, обновления и диагностику.
+Demo использует временные данные, без настоящего Telegram-токена. Манифесты
+приложений не разворачивают production-кластеры PostgreSQL, Redis или Kafka.
+
 ## Что дальше
 
-Следующий и последний этап основного roadmap: Kubernetes manifests для API,
-Pinger и Consumer, конфигурация, secrets, probes, resources и инструкция по
-развёртыванию.
+Основной roadmap завершён. Это рабочий MVP, а не готовый публичный SaaS.
+Дальнейшие улучшения можно выбирать отдельно: авторизация, retention history,
+uptime aggregation, графики latency, maintenance windows и более гибкие alerts.
+Перед публичным запуском нужны HTTPS, контроль доступа, backups и проверка
+нагрузки. CPU-based HPA является стартовой настройкой, а не заменой capacity planning.

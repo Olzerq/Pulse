@@ -1,9 +1,16 @@
 .env
+.env.*
+!.env.example
 *.log
+
+# Local Kubernetes credentials and overlays.
+deploy/k8s/secret.yaml
+deploy/k8s/.local/
 
 # Local build artifacts.
 bin/
 dist/
+pulse-images.tar
 
 # Editor and OS files.
 .idea/

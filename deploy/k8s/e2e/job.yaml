@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pulse-e2e
+  labels:
+    app.kubernetes.io/name: pulse-e2e
+    app.kubernetes.io/part-of: pulse
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: e2e
+          image: pulse-e2e-tests:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: PULSE_E2E_API_URL, value: "http://pulse-api"}
+            - {name: PULSE_E2E_TARGET_URL, value: "http://pulse-api/healthz"}
+            - name: PULSE_E2E_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pulse-secrets
+                  key: PULSE_POSTGRES_URL
+            - name: PULSE_E2E_REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: pulse-config
+                  key: PULSE_REDIS_ADDR
+            - {name: GOMAXPROCS, value: "2"}
+            - {name: GOFLAGS, value: "-p=2"}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi

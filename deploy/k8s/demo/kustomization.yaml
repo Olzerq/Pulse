@@ -1,0 +1,10 @@
+# Disposable local infrastructure. Never use this overlay for real data.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - kafka.yaml
+  - topic-job.yaml
+  - secret.yaml

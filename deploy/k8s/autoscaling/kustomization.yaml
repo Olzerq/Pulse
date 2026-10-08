@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pulse
+resources:
+  - ../base
+  - pinger-hpa.yaml
+# Let the HPA own replicas. Reapplying this overlay must not reset its decision.
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: pulse-pinger
+    patch: |-
+      - op: remove
+        path: /spec/replicas

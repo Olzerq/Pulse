@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: pulse-infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: pulse-demo-postgres
+  template:
+    metadata:
+      labels:
+        app: pulse-demo-postgres
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: postgres:18.6-alpine
+          env:
+            - {name: POSTGRES_USER, value: pulse}
+            - {name: POSTGRES_PASSWORD, value: pulse}
+            - {name: POSTGRES_DB, value: pulse}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, pulse, -d, pulse]
+            periodSeconds: 5
+            timeoutSeconds: 2
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql}
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: pulse-infra
+spec:
+  selector: {app: pulse-demo-postgres}
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}
