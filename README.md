@@ -7,7 +7,7 @@ backend-разработкой и event-driven архитектурой.
 Pulse регулярно проверяет заданные URL, сохраняет историю, показывает текущее
 состояние сервисов и отправляет уведомления при падении или восстановлении.
 
-Сейчас завершён одиннадцатый этап разработки. Monitors можно создавать и управлять
+Сейчас завершён двенадцатый этап разработки. Monitors можно создавать и управлять
 ими через web UI или HTTP API. Pinger проверяет активные URL по расписанию,
 отправляет результаты в Kafka, а Consumer сохраняет историю в PostgreSQL и
 актуальное состояние в Redis. При падении и восстановлении Pulse может
@@ -90,6 +90,8 @@ Monitor
 - проверка состояния API через `GET /healthz`
 - unit tests для checker, scheduler, событий, переходов и уведомлений
 - integration tests с настоящими PostgreSQL, Redis и Kafka
+- E2E-тест полного потока API, Pinger, Kafka, Consumer, PostgreSQL и Redis
+- read-only containers, сброшенные Linux capabilities и ограничение логов
 
 ## Стек
 
@@ -102,8 +104,7 @@ Monitor
 Для работы с Redis используется `go-redis`, для Kafka используется `kafka-go`,
 а Telegram Bot API вызывается стандартным HTTP-клиентом Go. Redis координирует
 несколько экземпляров Pinger, а Prometheus собирает технические metrics. На
-следующих этапах проект получит дополнительные integration tests и Kubernetes
-manifests.
+следующем этапе проект получит Kubernetes manifests.
 
 ## Быстрый запуск
 
@@ -118,6 +119,10 @@ docker compose up --build
 Compose соберёт Go-приложения, запустит инфраструктуру и два экземпляра Pinger,
 применит миграции, создаст Kafka topic `check.result` с тремя partitions и
 дождётся готовности API.
+
+Опубликованные порты по умолчанию слушают только `127.0.0.1` и недоступны с
+других компьютеров в сети. Если доступ из сети действительно нужен, адрес
+можно явно изменить через `PULSE_BIND_ADDRESS`.
 
 После запуска API будет доступен по адресу:
 
@@ -162,6 +167,11 @@ docker compose ps
 ```bash
 docker compose logs -f
 ```
+
+Go-контейнеры запускаются от пользователя с UID `10001`, используют read-only
+filesystem, не получают Linux capabilities и работают с
+`no-new-privileges`. Встроенный init-процесс передаёт сигналы приложению, а
+Docker logs ограничены тремя файлами по 10 MB.
 
 Остановить проект:
 
@@ -558,6 +568,7 @@ Compose с опубликованными локальными портами.
 | `PULSE_PINGER_USER_AGENT` | `Pulse/0.1` | User-Agent исходящих запросов |
 | `PULSE_PINGER_LOCK_GRACE` | `5s` | Запас времени для TTL Redis lock |
 | `PULSE_PINGER_REPLICAS` | `2` | Число Pinger в Docker Compose |
+| `PULSE_BIND_ADDRESS` | `127.0.0.1` | Адрес публикации локальных Docker-портов |
 | `PROMETHEUS_PORT` | `9091` | Локальный порт Prometheus в Docker Compose |
 | `PULSE_TELEGRAM_BOT_TOKEN` | пусто | Токен Telegram bot, секрет |
 | `PULSE_TELEGRAM_CHAT_ID` | пусто | Chat ID для уведомлений |
@@ -595,10 +606,12 @@ internal/
   pinger/           scheduler и worker pool
   consumer/         процесс Consumer
 
-docker/             общий Dockerfile для Go-сервисов
+docker/             Dockerfiles для сервисов и тестовых контейнеров
 migrations/         SQL-миграции и их встраивание в binary
 deploy/prometheus/  конфигурация Prometheus
 deploy/k8s/         будущие Kubernetes manifests
+tests/integration/  тесты PostgreSQL, Redis и Kafka
+tests/e2e/          проверка полного межсервисного потока
 docker-compose.yml  локальное окружение проекта
 ```
 
@@ -641,10 +654,23 @@ go test -tags=integration -count=1 -v ./tests/integration
 `PULSE_INTEGRATION_POSTGRES_URL`, `PULSE_INTEGRATION_REDIS_ADDR` и
 `PULSE_INTEGRATION_KAFKA_BROKER`.
 
+Полный E2E-тест запускает API, два экземпляра Pinger, Consumer и всю
+инфраструктуру. Он создаёт monitor через API, ждёт реальную HTTP-проверку,
+проверяет историю и текущий статус, открывает web UI и удаляет только свои
+тестовые данные:
+
+```bash
+docker compose --profile e2e run --build --rm e2e-tests
+```
+
+Этот сценарий проверяет настоящий путь данных:
+
+```text
+API -> PostgreSQL -> Pinger -> Kafka -> Consumer -> PostgreSQL и Redis -> API
+```
+
 ## Что дальше
 
-Следующий этап по roadmap: Docker hardening и автоматическая проверка полного
-сценария от создания monitor до появления истории и текущего статуса.
-
-После этого останутся Kubernetes manifests и финальная документация по
+Следующий и последний этап основного roadmap: Kubernetes manifests для API,
+Pinger и Consumer, конфигурация, secrets, probes, resources и инструкция по
 развёртыванию.

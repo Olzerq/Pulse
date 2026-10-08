@@ -19,4 +19,4 @@ RUN addgroup -g 10001 -S tester && \
     adduser -u 10001 -S -G tester tester
 
 USER tester:tester
-ENTRYPOINT ["go", "test", "-mod=readonly", "-tags=integration", "-count=1", "-v", "./tests/integration"]
+ENTRYPOINT ["go", "test", "-mod=readonly", "-tags=e2e", "-count=1", "-v", "./tests/e2e"]

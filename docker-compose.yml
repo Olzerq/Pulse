@@ -23,8 +23,26 @@ x-app-environment: &app-environment
   PULSE_TELEGRAM_API_URL: ${PULSE_TELEGRAM_API_URL:-https://api.telegram.org}
   PULSE_TELEGRAM_REQUEST_TIMEOUT: ${PULSE_TELEGRAM_REQUEST_TIMEOUT:-10s}
 
+x-go-service-hardening: &go-service-hardening
+  init: true
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 256
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   api:
+    <<: *go-service-hardening
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -32,6 +50,7 @@ services:
         SERVICE: api
     image: pulse-api:dev
     restart: unless-stopped
+    logging: *default-logging
     environment:
       <<: *app-environment
       PULSE_HTTP_ADDR: :8080
@@ -45,7 +64,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "${PULSE_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -55,6 +74,7 @@ services:
     stop_grace_period: 15s
 
   pinger:
+    <<: *go-service-hardening
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -62,6 +82,7 @@ services:
         SERVICE: pinger
     image: pulse-pinger:dev
     restart: unless-stopped
+    logging: *default-logging
     deploy:
       replicas: ${PULSE_PINGER_REPLICAS:-2}
     environment: *app-environment
@@ -85,6 +106,7 @@ services:
     stop_grace_period: 15s
 
   consumer:
+    <<: *go-service-hardening
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -92,6 +114,7 @@ services:
         SERVICE: consumer
     image: pulse-consumer:dev
     restart: unless-stopped
+    logging: *default-logging
     environment: *app-environment
     depends_on:
       postgres:
@@ -115,11 +138,12 @@ services:
   prometheus:
     image: prom/prometheus:v3.15.0
     restart: unless-stopped
+    logging: *default-logging
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
     ports:
-      - "${PROMETHEUS_PORT:-9091}:9090"
+      - "${PULSE_BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-9091}:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -130,11 +154,15 @@ services:
         condition: service_healthy
 
   integration-tests:
+    <<: *go-service-hardening
     profiles: ["test"]
     build:
       context: .
       dockerfile: docker/Dockerfile.integration
     image: pulse-integration-tests:dev
+    logging: *default-logging
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=1g,mode=1777
     environment:
       PULSE_INTEGRATION_POSTGRES_URL: postgres://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
       PULSE_INTEGRATION_REDIS_ADDR: redis:6379
@@ -150,13 +178,43 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  e2e-tests:
+    <<: *go-service-hardening
+    profiles: ["e2e"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.e2e
+    image: pulse-e2e-tests:dev
+    logging: *default-logging
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=1g,mode=1777
+    environment:
+      PULSE_E2E_API_URL: http://api:8080
+      PULSE_E2E_TARGET_URL: http://api:8080/healthz
+      PULSE_E2E_POSTGRES_URL: postgres://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
+      PULSE_E2E_REDIS_ADDR: redis:6379
+    depends_on:
+      api:
+        condition: service_healthy
+      pinger:
+        condition: service_healthy
+      consumer:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
   migrate:
+    <<: *go-service-hardening
     build:
       context: .
       dockerfile: docker/Dockerfile
       args:
         SERVICE: migrate
     image: pulse-migrate:dev
+    logging: *default-logging
     environment: *app-environment
     depends_on:
       postgres:
@@ -166,12 +224,13 @@ services:
   postgres:
     image: postgres:18.6-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-pulse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulse}
       POSTGRES_DB: ${POSTGRES_DB:-pulse}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${PULSE_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
@@ -184,9 +243,10 @@ services:
   redis:
     image: redis:8.10.1-alpine
     restart: unless-stopped
+    logging: *default-logging
     command: ["redis-server", "--appendonly", "yes", "--loglevel", "warning"]
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${PULSE_BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -198,6 +258,7 @@ services:
 
   kafka-init:
     image: apache/kafka:4.3.1
+    logging: *default-logging
     depends_on:
       kafka:
         condition: service_healthy
@@ -218,6 +279,7 @@ services:
   kafka:
     image: apache/kafka:4.3.1
     restart: unless-stopped
+    logging: *default-logging
     hostname: kafka
     environment:
       KAFKA_NODE_ID: 1
@@ -236,7 +298,7 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
     ports:
-      - "${KAFKA_PORT:-9092}:9092"
+      - "${PULSE_BIND_ADDRESS:-127.0.0.1}:${KAFKA_PORT:-9092}:9092"
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
