@@ -7,7 +7,7 @@ backend-разработкой и event-driven архитектурой.
 Pulse регулярно проверяет заданные URL, сохраняет историю, показывает текущее
 состояние сервисов и отправляет уведомления при падении или восстановлении.
 
-Сейчас завершён десятый этап разработки. Monitors можно создавать и управлять
+Сейчас завершён одиннадцатый этап разработки. Monitors можно создавать и управлять
 ими через web UI или HTTP API. Pinger проверяет активные URL по расписанию,
 отправляет результаты в Kafka, а Consumer сохраняет историю в PostgreSQL и
 актуальное состояние в Redis. При падении и восстановлении Pulse может
@@ -88,6 +88,8 @@ Monitor
 - multi-stage Docker-сборка
 - запуск Go-сервисов от непривилегированного пользователя
 - проверка состояния API через `GET /healthz`
+- unit tests для checker, scheduler, событий, переходов и уведомлений
+- integration tests с настоящими PostgreSQL, Redis и Kafka
 
 ## Стек
 
@@ -602,6 +604,8 @@ docker-compose.yml  локальное окружение проекта
 
 ## Проверка кода
 
+Обычные unit tests не требуют Docker:
+
 ```bash
 go fmt ./...
 go vet ./...
@@ -609,10 +613,38 @@ go test ./...
 docker compose config --quiet
 ```
 
+Integration tests находятся в `tests/integration` и отделены build tag
+`integration`. Они проверяют:
+
+- CRUD monitors, идемпотентную запись checks и чтение истории в PostgreSQL
+- владельца Redis lock, конкуренцию за lock и освобождение по TTL
+- публикацию события через Pulse publisher, чтение consumer group и commit
+  Kafka offset
+
+Запустить их вместе с нужной инфраструктурой можно одной командой:
+
+```bash
+docker compose --profile test run --build --rm integration-tests
+```
+
+Тесты используют уникальные UUID и удаляют только созданные ими строки, Redis
+keys и Kafka topics. Существующие monitors и их история не меняются.
+
+Если PostgreSQL, Redis и Kafka уже запущены локально на стандартных портах,
+тесты можно выполнить напрямую:
+
+```bash
+go test -tags=integration -count=1 -v ./tests/integration
+```
+
+Адреса можно переопределить переменными
+`PULSE_INTEGRATION_POSTGRES_URL`, `PULSE_INTEGRATION_REDIS_ADDR` и
+`PULSE_INTEGRATION_KAFKA_BROKER`.
+
 ## Что дальше
 
-Следующий этап по roadmap: integration tests для полного потока от создания
-monitor до записи проверки и обновления статуса.
+Следующий этап по roadmap: Docker hardening и автоматическая проверка полного
+сценария от создания monitor до появления истории и текущего статуса.
 
-После тестов останутся Docker hardening, Kubernetes manifests и финальная
-документация по развёртыванию.
+После этого останутся Kubernetes manifests и финальная документация по
+развёртыванию.

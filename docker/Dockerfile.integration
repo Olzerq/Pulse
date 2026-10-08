@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+
+ARG GO_VERSION=1.23.3
+
+FROM golang:${GO_VERSION}-alpine
+
+WORKDIR /src
+ENV CGO_ENABLED=0
+ENV GOTOOLCHAIN=local
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY internal ./internal
+COPY tests ./tests
+
+ENTRYPOINT ["go", "test", "-tags=integration", "-count=1", "-v", "./tests/integration"]

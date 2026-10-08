@@ -129,6 +129,27 @@ services:
       consumer:
         condition: service_healthy
 
+  integration-tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.integration
+    image: pulse-integration-tests:dev
+    environment:
+      PULSE_INTEGRATION_POSTGRES_URL: postgres://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD:-pulse}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
+      PULSE_INTEGRATION_REDIS_ADDR: redis:6379
+      PULSE_INTEGRATION_KAFKA_BROKER: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   migrate:
     build:
       context: .
